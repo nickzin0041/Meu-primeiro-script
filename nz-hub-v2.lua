@@ -38,8 +38,9 @@ local getconns = getconnections or get_signal_cons
 local fireproximityprompt = fireproximityprompt or (syn and syn.fireproximityprompt)
 
 --========================= CONFIG ==========================--
+-- Cole sua chave em https://console.anthropic.com/ → API Keys
 local CONFIG = {
-    apiKey   = "",
+    apiKey   = "COLE_SUA_CHAVE_AQUI", -- ex: sk-ant-api03-...
     model    = "claude-haiku-4-5-20251001", -- ou "claude-sonnet-4-6" / "claude-opus-4-8"
     interval = 20,                          -- s entre decisões
     maxTokens = 300,
@@ -900,6 +901,9 @@ local function buildUI()
         btn.Text=label; Instance.new("UICorner",btn).CornerRadius=UDim.new(0,6); return btn end
 
     local keyBox=mkBox(48,"Cole sua API key (sk-ant-...)")
+    if CONFIG.apiKey ~= "" and CONFIG.apiKey ~= "COLE_SUA_CHAVE_AQUI" then
+        keyBox.Text = CONFIG.apiKey
+    end
     local connectBtn=mkBtn(12,88,108,"Conectar",Color3.fromRGB(46,200,120))
     local toggleBtn =mkBtn(128,88,66,"Start",Color3.fromRGB(70,130,230))
     local spyBtn    =mkBtn(202,88,74,"Spy",Color3.fromRGB(200,170,70))
@@ -965,7 +969,12 @@ local function buildUI()
             :format(State.plotPos.X, State.plotPos.Y, State.plotPos.Z), "ai")
     end)
 
-    log("Nz Hub v2 carregado. Cole a key e Conectar.","info")
+    if CONFIG.apiKey ~= "" and CONFIG.apiKey ~= "COLE_SUA_CHAVE_AQUI" then
+        State.connected = true
+        log("Conectado automaticamente. Modelo: "..CONFIG.model, "ai")
+    else
+        log("Nz Hub v2 carregado. Cole a key em CONFIG.apiKey ou no campo acima.", "info")
+    end
     log("Foco em "..CONFIG.preferredSeed..". Ande até o canteiro e clique 'Mark Plot'.","muted")
 end
 
