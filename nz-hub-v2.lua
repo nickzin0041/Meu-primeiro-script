@@ -38,7 +38,7 @@ local getconns = getconnections or get_signal_cons
 local fireproximityprompt = fireproximityprompt or (syn and syn.fireproximityprompt)
 
 --========================= CONFIG ==========================--
--- Cole sua chave em https://console.anthropic.com/ → API Keys
+-- Cole SUA chave da Anthropic (https://console.anthropic.com/) — não existe chave "do Cursor".
 local CONFIG = {
     apiKey   = "COLE_SUA_CHAVE_AQUI", -- ex: sk-ant-api03-...
     model    = "claude-haiku-4-5-20251001", -- ou "claude-sonnet-4-6" / "claude-opus-4-8"
@@ -145,6 +145,265 @@ local function clickByText(needle)
     local b = findButton(needle)
     if b then clickButton(b); return true end
     log("Botão não encontrado: '"..tostring(needle).."' (use Scan GUI)", "error")
+    return false
+end
+
+-- Retorna caminho legível no Explorer (PlayerGui.Shop.Frame...).
+local function getGuiPath(obj)
+    local parts = {}
+    local n = obj
+    while n and n ~= game do
+        table.insert(parts, 1, n.Name)
+        n = n.Parent
+    end
+    return table.concat(parts, ".")
+end
+
+-- Checa se o elemento está visível (inclui ScreenGui.Enabled).
+local function isGuiVisible(obj)
+    local n = obj
+    while n do
+        if n:IsA("GuiObject") and n.Visible == false then return false end
+        if n:IsA("ScreenGui") and n.Enabled == false then return false end
+        n = n.Parent
+    end
+    return true
+end
+
+local BUY_BTN_NAMES = {"buybutton", "buy", "purchase", "buybtn", "purchasebutton", "restock", "buylabel"}
+local BUY_BTN_TEXTS = {"buy", "purchase", "comprar", "restock", "get"}
+
+local function isBuyButton(obj)
+    if typeof(obj) ~= "Instance" or not obj:IsA("GuiButton") then return false end
+    if not isGuiVisible(obj) then return false end
+    local nm = obj.Name:lower()
+    for _, n in ipairs(BUY_BTN_NAMES) do
+        if nm:find(n, 1, true) then return true end
+    end
+    local tx = getText(obj):lower()
+    for _, t in ipairs(BUY_BTN_TEXTS) do
+        if tx:find(t, 1, true) then return true end
+    end
+    return false
+end
+
+-- Procura botão Buy dentro de um container (Frame/ScrollingFrame do item).
+local function findBuyButtonInContainer(container)
+    if not container then return nil end
+    for _, d in ipairs(container:GetDescendants()) do
+        if isBuyButton(d) then return d end
+    end
+    return nil
+end
+
+-- Abre a loja de sementes (HUD "Seeds" ou ScreenGui já existente).
+local function openSeedShop()
+    local known = {"SeedShop", "Seed_Shop", "SeedsShop", "SeedStore", "Seeds", "Shop"}
+    for _, name in ipairs(known) do
+        local gui = PlayerGui:FindFirstChild(name)
+        if gui and gui:IsA("ScreenGui") and gui.Enabled ~= false then
+            return gui
+        end
+    end
+    for _, gui in ipairs(PlayerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled ~= false and gui.Name:lower():find("seed", 1, true) then
+            return gui
+        end
+    end
+    clickByText("Seeds")
+    task.wait(1.0)
+    for _, name in ipairs(known) do
+        local gui = PlayerGui:FindFirstChild(name)
+        if gui then return gui end
+    end
+    for _, gui in ipairs(PlayerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Name:lower():find("seed", 1, true) then
+            return gui
+        end
+    end
+    return nil
+end
+
+-- Vasculha TODO o PlayerGui procurando label com nome da semente + botão Buy perto.
+local function deepFindSeedBuyButton(target, price)
+    target = tostring(target):lower()
+    local candidates = {}
+
+    local function addCandidate(btn, score, reason)
+        for _, c in ipairs(candidates) do
+            if c.btn == btn then
+                if score > c.score then c.score, c.reason = score, reason end
+                return
+            end
+        end
+        table.insert(candidates, { btn = btn, score = score, reason = reason })
+    end
+
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if not isGuiVisible(obj) then
+            -- skip
+        else
+            local objText = getText(obj):lower()
+            local nameLower = obj.Name:lower()
+            local matchesSeed = objText:find(target, 1, true) or nameLower:find(target, 1, true)
+
+            if matchesSeed then
+                local node = obj
+                for level = 1, 12 do
+                    if not node or node:IsA("ScreenGui") then break end
+                    local buyBtn = findBuyButtonInContainer(node)
+                    if not buyBtn and node.Parent then
+                        buyBtn = findBuyButtonInContainer(node.Parent)
+                    end
+                    if buyBtn then
+                        local score = 110 - level * 4
+                        if nameLower:find("seed", 1, true) or obj.Name == "Seed_Name" then score = score + 25 end
+                        if price and price > 0 and (objText:find(tostring(price), 1, true) or objText:find(price .. "¢", 1, true)) then
+                            score = score + 20
+                        end
+                        addCandidate(buyBtn, score, getGuiPath(obj) .. " -> " .. buyBtn.Name)
+                    end
+                    node = node.Parent
+                end
+            end
+
+            if isBuyButton(obj) then
+                local node = obj.Parent
+                for level = 1, 8 do
+                    if not node then break end
+                    for _, d in ipairs(node:GetDescendants()) do
+                        local t = getText(d):lower()
+                        if t:find(target, 1, true) or d.Name:lower():find(target, 1, true) then
+                            addCandidate(obj, 85 - level * 3, getGuiPath(d) .. " -> " .. obj.Name)
+                            break
+                        end
+                    end
+                    node = node.Parent
+                end
+            end
+        end
+    end
+
+    table.sort(candidates, function(a, b) return a.score > b.score end)
+    if #candidates > 0 then
+        return candidates[1].btn, candidates[1].reason, candidates
+    end
+    return nil, nil, candidates
+end
+
+-- Confirma se a compra realmente aconteceu (saldo ou inventário mudou).
+local function purchaseConfirmed(target, moneyBefore, invBefore, price)
+    task.wait(0.55)
+    local moneyAfter = parseCurrency(readCurrency())
+    local invAfter = 0
+    pcall(function()
+        invAfter = getPlayerInventory().seeds[target] or 0
+    end)
+    if invAfter > invBefore then return true end
+    if price > 0 and moneyAfter < moneyBefore then return true end
+    return false
+end
+
+-- Tenta PurchaseSeed remoto com formatos comuns de argumento.
+local function tryPurchaseViaNet(target)
+    if not GAME.ok then pcall(initGameAPI) end
+    local ps = GAME.net and GAME.net.SeedShop and GAME.net.SeedShop.PurchaseSeed
+    if not ps then return false end
+
+    local moneyBefore = parseCurrency(readCurrency())
+    local invBefore = 0
+    pcall(function() invBefore = getPlayerInventory().seeds[target] or 0 end)
+    local price = PRICES[target] or 0
+
+    local argSets = {
+        { target },
+        { target, 1 },
+        { { SeedName = target } },
+        { { seed = target } },
+        { { Name = target } },
+    }
+    for _, args in ipairs(argSets) do
+        if fireNet(ps, table.unpack(args)) and purchaseConfirmed(target, moneyBefore, invBefore, price) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Deep scan: abre loja, acha botão Buy da semente e clica. Loga diagnóstico se falhar.
+local function deepScanBuySeed(target, quiet)
+    target = target or CONFIG.preferredSeed
+    local price = PRICES[target] or 0
+    if not quiet then
+        log("Deep scan: vasculhando PlayerGui por '" .. target .. "'...", "ai")
+    end
+
+    local shop = openSeedShop()
+    if shop and not quiet then
+        log("Loja aberta/detectada: " .. shop.Name, "muted")
+    end
+    task.wait(0.4)
+
+    local btn, reason = deepFindSeedBuyButton(target, price)
+    if btn then
+        clickButton(btn)
+        if not quiet then
+            log(("Deep scan: cliquei [%s] — %s"):format(btn.Name, reason or "?"), "info")
+        end
+        return true
+    end
+
+    if not quiet then
+        log("Deep scan: botão de compra não encontrado para " .. target .. ".", "error")
+        local n = 0
+        for _, o in ipairs(PlayerGui:GetDescendants()) do
+            if isGuiVisible(o) and (o:IsA("TextLabel") or o:IsA("TextButton")) then
+                local t = getText(o)
+                if t:lower():find(target:lower(), 1, true) then
+                    n = n + 1
+                    log(("  texto: %s = \"%s\""):format(getGuiPath(o), t:sub(1, 40)), "muted")
+                end
+            end
+            if n >= 6 then break end
+        end
+        n = 0
+        for _, o in ipairs(PlayerGui:GetDescendants()) do
+            if isBuyButton(o) then
+                n = n + 1
+                log(("  buy: %s = \"%s\""):format(getGuiPath(o), getText(o):sub(1, 24)), "muted")
+            end
+            if n >= 6 then break end
+        end
+    end
+    return false
+end
+
+-- Compra via UI clássica (Seed_Name + BuyButton dentro da loja).
+local function buySeedViaClassicUI(target)
+    local shop = openSeedShop()
+    if not shop then return false end
+
+    local targetLower = target:lower()
+    for _, lbl in ipairs(shop:GetDescendants()) do
+        if lbl:IsA("TextLabel") and isGuiVisible(lbl) then
+            local txt = getText(lbl):lower()
+            local nameMatch = lbl.Name:lower():find("seed", 1, true) or lbl.Name == "Seed_Name"
+            if txt:find(targetLower, 1, true) or (nameMatch and txt:find(targetLower, 1, true)) then
+                local node, buyBtn = lbl.Parent, nil
+                for _ = 1, 6 do
+                    if not node then break end
+                    buyBtn = node:FindFirstChild("BuyButton", true) or findBuyButtonInContainer(node)
+                    if buyBtn then break end
+                    node = node.Parent
+                end
+                if buyBtn then
+                    clickButton(buyBtn)
+                    log("Cliquei BuyButton de " .. target .. " (UI clássica).", "info")
+                    return true
+                end
+            end
+        end
+    end
     return false
 end
 
@@ -413,18 +672,31 @@ local function walkTo(pos, timeout)
     return arrived
 end
 
--- Dump dos textos de botões/labels (pra você me passar os nomes reais).
-local function scanGui()
-    log("--- SCAN GUI ---", "ai")
+-- Dump dos textos de botões/labels. filter = opcional ("Carrot", "buy", "seed"...).
+local function scanGui(filter)
+    filter = filter and tostring(filter):lower() or nil
+    log(filter and ("--- SCAN GUI (filtro: %s) ---"):format(filter) or "--- SCAN GUI ---", "ai")
     local n = 0
     for _, o in ipairs(PlayerGui:GetDescendants()) do
-        if (o:IsA("GuiButton") or o:IsA("TextLabel")) and o.Visible ~= false then
-            local t = getText(o):gsub("%s+"," ")
-            if t ~= "" then n = n + 1; log(("%s [%s]: \"%s\""):format(o.ClassName, o.Name, t:sub(1,32)), "muted") end
+        if isGuiVisible(o) and (o:IsA("GuiButton") or o:IsA("TextLabel") or o:IsA("TextBox")) then
+            local t = getText(o):gsub("%s+", " ")
+            local path = getGuiPath(o)
+            local pathLower = path:lower()
+            local nameLower = o.Name:lower()
+            local match = not filter
+                or t:lower():find(filter, 1, true)
+                or nameLower:find(filter, 1, true)
+                or pathLower:find(filter, 1, true)
+                or (filter == "buy" and isBuyButton(o))
+            if match and (t ~= "" or o:IsA("GuiButton")) then
+                n = n + 1
+                local tag = isBuyButton(o) and " [BUY]" or ""
+                log(("%s%s\n  %s \"%s\""):format(path, tag, o.ClassName, t:sub(1, 48)), "muted")
+            end
         end
-        if n >= 60 then break end
+        if n >= 80 then break end
     end
-    log("--- fim do scan ("..n.." itens) ---", "ai")
+    log("--- fim do scan (" .. n .. " itens) ---", "ai")
 end
 
 --====================== CHAMADA AO CLAUDE ===================--
@@ -659,36 +931,34 @@ ADAPTER.actions = {
         end
         log(("Comprando %s (%d¢, saldo %d¢)..."):format(target, price, money), "muted")
 
-        -- 1) caminho direto via Networking (mais confiável, não precisa abrir loja)
-        if not GAME.ok then pcall(initGameAPI) end
-        local ps = GAME.net and GAME.net.SeedShop and GAME.net.SeedShop.PurchaseSeed
-        if ps and fireNet(ps, target) then
-            log("Comprei "..target.." via PurchaseSeed.", "info")
+        local invBefore = 0
+        pcall(function() invBefore = getPlayerInventory().seeds[target] or 0 end)
+
+        -- 1) remoto via Networking (vários formatos de argumento + confirmação)
+        if tryPurchaseViaNet(target) then
+            log("Comprei " .. target .. " via PurchaseSeed.", "info")
+            return
+        end
+        log("Remoto não confirmou compra; tentando UI...", "muted")
+
+        -- 2) UI clássica (SeedShop + BuyButton)
+        local bought = buySeedViaClassicUI(target)
+        if bought and purchaseConfirmed(target, money, invBefore, price) then
+            return
+        end
+        if bought then
+            log("Clique na UI sem confirmação; tentando deep scan...", "muted")
+        end
+
+        -- 3) deep scan em todo o PlayerGui
+        if deepScanBuySeed(target, false) and purchaseConfirmed(target, money, invBefore, price) then
+            log("Comprei " .. target .. " via deep scan.", "info")
             return
         end
 
-        -- 2) fallback: abrir SeedShop e clicar no BuyButton do item certo
-        local shop = PlayerGui:FindFirstChild("SeedShop")
-        if not shop or shop.Enabled == false then
-            clickByText("Seeds"); task.wait(0.9); shop = PlayerGui:FindFirstChild("SeedShop")
-        end
-        if not shop then log("SeedShop não encontrado (e remote falhou).", "error"); return end
-        local clicked = false
-        for _, lbl in ipairs(shop:GetDescendants()) do
-            if lbl.Name == "Seed_Name" and lbl:IsA("TextLabel")
-               and getText(lbl):lower():find(target:lower(), 1, true) then
-                local node, buyBtn = lbl.Parent, nil
-                for _ = 1, 4 do
-                    if not node then break end
-                    buyBtn = node:FindFirstChild("BuyButton", true)
-                    if buyBtn then break end
-                    node = node.Parent
-                end
-                if buyBtn then clickButton(buyBtn); clicked = true
-                    log("Cliquei no BuyButton de "..target..".", "info"); break end
-            end
-        end
-        if not clicked then log("Não comprei "..target.." (em estoque? nome certo?).", "error") end
+        log("Não comprei " .. target .. " — abra a loja Seeds e clique Scan.", "error")
+        scanGui(target)
+        scanGui("buy")
     end,
 
     -- VENDER: abre a ScreenGui de venda (Sell/SellShop) e clica no botão de
@@ -957,8 +1227,11 @@ local function buildUI()
         log("Spy ligado 30s. Plante/colha manualmente agora.","ai"); ADAPTER.spyRemotes(30)
     end)
     scanBtn.MouseButton1Click:Connect(function()
-        scanGui()
-        task.spawn(initGameAPI)   -- re-dump Networking keys + recarrega preços
+        openSeedShop()
+        task.wait(0.5)
+        scanGui(nil)
+        scanGui("buy")
+        task.spawn(initGameAPI)
     end)
     markBtn.MouseButton1Click:Connect(function()
         local char = LocalPlayer.Character
