@@ -52,6 +52,18 @@ GAG2.State = {
 -- Referências injetadas pelo Nx Hub
 GAG2.Console = nil
 GAG2.CONFIG = nil
+GAG2.AIConsole = nil
+
+local function aiLog(kind, msg)
+    if GAG2.AIConsole then
+        if kind == "current" then GAG2.AIConsole:setCurrent(msg)
+        elseif kind == "plan" then GAG2.AIConsole:plan(msg)
+        elseif kind == "doing" then GAG2.AIConsole:nextStep(msg)
+        elseif kind == "done" then GAG2.AIConsole:log("done", msg)
+        elseif kind == "error" then GAG2.AIConsole:log("error", msg)
+        else GAG2.AIConsole:log(kind, msg) end
+    end
+end
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -588,17 +600,46 @@ function GAG2:stopAntiAfk()
 end
 
 function GAG2:farmTick()
-    if GAG2.Settings.autoRedeemCodes then GAG2:doRedeemCodes() end
-    if GAG2.Settings.autoBuyGear then GAG2:doBuyGear() end
-    if GAG2.Settings.autoBuySeeds then GAG2:doBuySeeds() end
-    if GAG2.Settings.autoPlant then GAG2:doPlant() end
-    if GAG2.Settings.autoWater then GAG2:doWater() end
-    if GAG2.Settings.autoHarvest then GAG2:doHarvest() end
-    if GAG2.Settings.autoCollect then GAG2:doCollectGround() end
-    if GAG2.Settings.autoSell then GAG2:doSell() end
-    if GAG2.Settings.autoExpand then GAG2:doExpand() end
-    if GAG2.Settings.autoOpenEggs then GAG2:doOpenEggs() end
-    if GAG2.Settings.autoStealNight then GAG2:doStealNight() end
+    local steps = {}
+    if GAG2.Settings.autoRedeemCodes then table.insert(steps, "Resgatar códigos") end
+    if GAG2.Settings.autoBuyGear then table.insert(steps, "Comprar gear") end
+    if GAG2.Settings.autoBuySeeds then table.insert(steps, "Comprar sementes") end
+    if GAG2.Settings.autoPlant then table.insert(steps, "Plantar sementes") end
+    if GAG2.Settings.autoWater then table.insert(steps, "Regar plantas") end
+    if GAG2.Settings.autoHarvest then table.insert(steps, "Colher crops") end
+    if GAG2.Settings.autoCollect then table.insert(steps, "Coletar itens") end
+    if GAG2.Settings.autoSell then table.insert(steps, "Vender inventário") end
+    if GAG2.Settings.autoExpand then table.insert(steps, "Expandir plot") end
+    if GAG2.Settings.autoOpenEggs then table.insert(steps, "Abrir ovos") end
+    if GAG2.Settings.autoStealNight then table.insert(steps, "Roubar à noite") end
+
+    if GAG2.AIConsole and #steps > 0 then
+        local planCopy = {}
+        for i, s in ipairs(steps) do planCopy[i] = s end
+        table.insert(planCopy, "Repetir ciclo...")
+        GAG2.AIConsole:setPlan(planCopy)
+    end
+
+    local function runStep(name, fn)
+        if GAG2.AIConsole then GAG2.AIConsole:nextStep(name) end
+        fn()
+    end
+
+    if GAG2.Settings.autoRedeemCodes then runStep("Resgatar códigos", function() GAG2:doRedeemCodes() end) end
+    if GAG2.Settings.autoBuyGear then runStep("Comprar gear", function() GAG2:doBuyGear() end) end
+    if GAG2.Settings.autoBuySeeds then runStep("Comprar sementes", function() GAG2:doBuySeeds() end) end
+    if GAG2.Settings.autoPlant then runStep("Plantar sementes", function() GAG2:doPlant() end) end
+    if GAG2.Settings.autoWater then runStep("Regar plantas", function() GAG2:doWater() end) end
+    if GAG2.Settings.autoHarvest then runStep("Colher crops", function() GAG2:doHarvest() end) end
+    if GAG2.Settings.autoCollect then runStep("Coletar itens", function() GAG2:doCollectGround() end) end
+    if GAG2.Settings.autoSell then runStep("Vender inventário", function() GAG2:doSell() end) end
+    if GAG2.Settings.autoExpand then runStep("Expandir plot", function() GAG2:doExpand() end) end
+    if GAG2.Settings.autoOpenEggs then runStep("Abrir ovos", function() GAG2:doOpenEggs() end) end
+    if GAG2.Settings.autoStealNight then runStep("Roubar à noite", function() GAG2:doStealNight() end) end
+
+    if GAG2.AIConsole then
+        GAG2.AIConsole:log("info", "Ciclo de farm concluído — aguardando próximo...")
+    end
 end
 
 function GAG2:startAutoUp()
@@ -622,7 +663,25 @@ function GAG2:startAutoUp()
     GAG2.Settings.autoUp = true
     if GAG2.Settings.antiAfk then GAG2:setupAntiAfk() end
 
+    if GAG2.AIConsole then
+        GAG2.AIConsole:startTask("Orquestrando farm GAG2 — upando conta", {
+            "Descobrir remotes do jogo",
+            "Localizar plot do jogador",
+            "Iniciar loop de farm automático",
+            "Monitorar Sheckles e progresso",
+        })
+        GAG2.AIConsole:nextStep("Descobrir remotes do jogo...")
+    end
+
     log("success", "🚀 AUTO UP iniciado — farmando Sheckles automaticamente!")
+
+    if GAG2.AIConsole then
+        GAG2.AIConsole:nextStep("Localizar plot do jogador...")
+        GAG2.AIConsole:nextStep("Iniciar loop de farm automático...")
+        GAG2.AIConsole:setCurrent("Executando ciclo de farm GAG2...")
+        GAG2.AIConsole:setStatus("working")
+        GAG2.AIConsole:clearPlan()
+    end
 
     GAG2.State.loops.main = task.spawn(function()
         while GAG2.State.running and GAG2.Settings.autoUp do
@@ -639,6 +698,9 @@ function GAG2:stopAutoUp()
     GAG2.State.running = false
     GAG2.Settings.autoUp = false
     GAG2:stopAntiAfk()
+    if GAG2.AIConsole then
+        GAG2.AIConsole:finishTask("Farm GAG2 parado pelo usuário")
+    end
     log("info", "Auto UP parado.")
 end
 
@@ -653,11 +715,16 @@ function GAG2:getStatusText()
     )
 end
 
-function GAG2:init(console, config)
+function GAG2:init(console, config, aiConsole)
     GAG2.Console = console
     GAG2.CONFIG = config
+    GAG2.AIConsole = aiConsole
     if GAG2:isInGame() then
         log("success", "Grow a Garden 2 detectado! Aba GAG2 disponível.")
+        if aiConsole then
+            aiConsole:log("info", "GAG2 detectado — pronto para orquestrar farm")
+            aiConsole:plan("Use a aba GAG2 → UPAR CONTA para iniciar")
+        end
         GAG2:discoverRemotes()
         GAG2:findPlayerPlot()
     end

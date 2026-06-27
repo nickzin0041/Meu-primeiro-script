@@ -17,7 +17,7 @@ local LocalPlayer = Players.LocalPlayer
 --// Configuração
 local CONFIG = {
     Name = "Nx Hub",
-    Version = "1.1.0",
+    Version = "1.2.0",
     DataFolder = "NxHub",
     LearnFile = "NxHub/learned_errors.json",
     ConfigFile = "NxHub/config.json",
@@ -237,6 +237,130 @@ function Console:error(msg) self:log("error", msg) end
 function Console:success(msg) self:log("success", msg) end
 function Console:ai(msg) self:log("ai", msg) end
 function Console:debug(msg) self:log("debug", msg) end
+
+--// Console da IA (ação atual, fila e histórico)
+local AIConsole = {
+    status = "idle",
+    currentAction = "Aguardando comandos...",
+    plannedActions = {},
+    logs = {},
+    maxLogs = 400,
+    callbacks = {},
+}
+
+local AI_STATUS_COLORS = {
+    idle = CONFIG.TextDim,
+    thinking = CONFIG.Warning,
+    working = CONFIG.Info,
+    success = CONFIG.Success,
+    error = CONFIG.Error,
+}
+
+function AIConsole:onUpdate(callback)
+    table.insert(self.callbacks, callback)
+end
+
+function AIConsole:notify()
+    for _, cb in ipairs(self.callbacks) do
+        task.spawn(cb)
+    end
+end
+
+function AIConsole:setStatus(status)
+    self.status = status
+    self:notify()
+end
+
+function AIConsole:setCurrent(text)
+    self.currentAction = tostring(text)
+    self:notify()
+end
+
+function AIConsole:setPlan(actions)
+    self.plannedActions = {}
+    for i, a in ipairs(actions) do
+        self.plannedActions[i] = tostring(a)
+    end
+    self:notify()
+end
+
+function AIConsole:addPlan(text)
+    table.insert(self.plannedActions, tostring(text))
+    self:notify()
+end
+
+function AIConsole:shiftPlan()
+    if #self.plannedActions > 0 then
+        table.remove(self.plannedActions, 1)
+        self:notify()
+    end
+end
+
+function AIConsole:clearPlan()
+    self.plannedActions = {}
+    self:notify()
+end
+
+function AIConsole:log(kind, message)
+    local entry = {
+        kind = kind or "info",
+        message = tostring(message),
+        time = os.date("%H:%M:%S"),
+    }
+    table.insert(self.logs, entry)
+    if #self.logs > self.maxLogs then
+        table.remove(self.logs, 1)
+    end
+    Console:ai("[IA] " .. entry.message)
+    self:notify()
+    return entry
+end
+
+function AIConsole:startTask(title, plan)
+    self:setStatus("working")
+    self:setCurrent(title)
+    if plan then self:setPlan(plan) end
+    self:log("start", "▶ " .. title)
+end
+
+function AIConsole:nextStep(stepName)
+    if #self.plannedActions > 0 and self.plannedActions[1] == stepName then
+        self:shiftPlan()
+    elseif #self.plannedActions > 0 then
+        self:shiftPlan()
+    end
+    self:setCurrent(stepName)
+    self:log("doing", "⟳ " .. stepName)
+end
+
+function AIConsole:finishTask(message)
+    self:clearPlan()
+    self:setCurrent("Aguardando comandos...")
+    self:setStatus("success")
+    self:log("done", "✓ " .. (message or "Tarefa concluída"))
+    task.delay(2, function()
+        if AIConsole.status == "success" then
+            AIConsole:setStatus("idle")
+            AIConsole:notify()
+        end
+    end)
+end
+
+function AIConsole:failTask(message)
+    self:clearPlan()
+    self:setCurrent("Erro — verifique o log")
+    self:setStatus("error")
+    self:log("error", "✕ " .. tostring(message))
+end
+
+function AIConsole:plan(message)
+    self:log("plan", "→ " .. tostring(message))
+end
+
+function AIConsole:think(message)
+    self:setStatus("thinking")
+    self:log("think", "◈ " .. tostring(message))
+end
 
 --// Busca profunda no Explorer
 local ExplorerScanner = {
@@ -530,14 +654,19 @@ end
 
 function AIClient:request(messages)
     if not AppConfig.apiKey or AppConfig.apiKey == "" then
+        AIConsole:failTask("Chave API não configurada")
         return false, "Chave API não configurada. Vá em Configurações."
     end
 
     local now = os.clock()
     if now - self.lastRequest < self.cooldown then
-        return false, "Aguarde " .. math.ceil(self.cooldown - (now - self.lastRequest)) .. "s entre requisições."
+        local msg = "Aguarde " .. math.ceil(self.cooldown - (now - self.lastRequest)) .. "s entre requisições."
+        AIConsole:log("warn", msg)
+        return false, msg
     end
     self.lastRequest = now
+
+    AIConsole:nextStep("Enviando requisição para API (" .. AppConfig.model .. ")...")
 
     local body = safeJSONEncode({
         model = AppConfig.model,
@@ -546,7 +675,6 @@ function AIClient:request(messages)
         max_tokens = 2000,
     })
 
-    Console:info("Enviando requisição para IA...")
     local res = httpRequest({
         Url = AppConfig.endpoint,
         Method = "POST",
@@ -558,29 +686,54 @@ function AIClient:request(messages)
     })
 
     if not res then
+        AIConsole:failTask("HTTP não disponível neste executor")
         return false, "HTTP não disponível neste executor."
     end
 
     if not res.Success and res.StatusCode ~= 200 then
         local errData = safeJSONDecode(res.Body or "")
         local errMsg = errData.error and errData.error.message or (res.Body or "Erro desconhecido")
-        Console:error("API: " .. tostring(errMsg))
+        AIConsole:failTask("API: " .. tostring(errMsg))
         return false, errMsg
     end
+
+    AIConsole:nextStep("Processando resposta da IA...")
 
     local data = safeJSONDecode(res.Body or "")
     local content = data.choices and data.choices[1] and data.choices[1].message and data.choices[1].message.content
     if not content then
+        AIConsole:failTask("Resposta inválida da API")
         return false, "Resposta inválida da API."
     end
 
     self.connected = true
-    Console:success("Resposta recebida da IA.")
+    AIConsole:log("done", "Resposta recebida (" .. #content .. " caracteres)")
     return true, content
 end
 
 function AIClient:analyzeError(errorMsg, stackTrace, extraContext)
+    AIConsole:startTask("Analisando erro de script", {
+        "Varredura profunda no Explorer",
+        "Buscar erros similares no aprendizado",
+        "Montar contexto para a IA",
+        "Enviar requisição para API",
+        "Processar resposta da IA",
+        "Salvar análise no banco de aprendizado",
+    })
+
+    AIConsole:nextStep("Varredura profunda no Explorer...")
     local userPrompt, ctx = self:buildUserPrompt(errorMsg, stackTrace, extraContext)
+    AIConsole:log("info", string.format("Encontrados %d scripts relacionados", #(ctx.relatedScripts or {})))
+
+    AIConsole:nextStep("Buscar erros similares no aprendizado...")
+    local learned = LearningDB:findSimilar(errorMsg, ctx.relatedScripts[1] and ctx.relatedScripts[1].path)
+    if learned then
+        AIConsole:log("info", "Erro similar encontrado no banco (" .. (learned.hits or 0) .. " hits)")
+    else
+        AIConsole:log("info", "Nenhum erro similar no banco — análise nova")
+    end
+
+    AIConsole:nextStep("Montar contexto para a IA...")
     local messages = {
         { role = "system", content = self:buildSystemPrompt() },
         { role = "user", content = userPrompt },
@@ -588,19 +741,55 @@ function AIClient:analyzeError(errorMsg, stackTrace, extraContext)
 
     local ok, result = self:request(messages)
     if ok then
+        AIConsole:nextStep("Salvar análise no banco de aprendizado...")
         local scriptPath = ctx.relatedScripts[1] and ctx.relatedScripts[1].path
         LearningDB:record(errorMsg, scriptPath, result, nil, false)
-        Console:ai("Análise salva no banco de aprendizado.")
+        AIConsole:finishTask("Análise concluída com sucesso")
+    else
+        AIConsole:failTask(tostring(result))
     end
     return ok, result, ctx
 end
 
 function AIClient:testConnection()
+    AIConsole:startTask("Testando conexão com API", {
+        "Verificar chave API",
+        "Enviar ping para servidor",
+        "Validar resposta",
+    })
+    AIConsole:nextStep("Verificar chave API...")
     local ok, result = self:request({
         { role = "system", content = "Responda apenas: Nx Hub conectado." },
         { role = "user", content = "teste" },
     })
+    if ok then
+        AIConsole:finishTask("Conectado: " .. tostring(result):sub(1, 60))
+    else
+        AIConsole:failTask(tostring(result))
+    end
     return ok, result
+end
+
+function AIClient:planGAG2Loop()
+    local steps = {}
+    if GAG2 then
+        if GAG2.Settings.autoRedeemCodes then table.insert(steps, "Resgatar códigos ativos") end
+        if GAG2.Settings.autoBuyGear then table.insert(steps, "Comprar gear no shop") end
+        if GAG2.Settings.autoBuySeeds then table.insert(steps, "Comprar sementes em estoque") end
+        if GAG2.Settings.autoPlant then table.insert(steps, "Plantar sementes nos plots") end
+        if GAG2.Settings.autoWater then table.insert(steps, "Regar plantas") end
+        if GAG2.Settings.autoHarvest then table.insert(steps, "Colher crops maduros") end
+        if GAG2.Settings.autoCollect then table.insert(steps, "Coletar itens no chão") end
+        if GAG2.Settings.autoSell then table.insert(steps, "Vender inventário (Sheckles)") end
+        if GAG2.Settings.autoExpand then table.insert(steps, "Expandir plot da fazenda") end
+        if GAG2.Settings.autoOpenEggs then table.insert(steps, "Abrir ovos no inventário") end
+        if GAG2.Settings.autoStealNight then table.insert(steps, "Roubar crops à noite") end
+    end
+    if #steps == 0 then
+        steps = { "Aguardando configuração GAG2..." }
+    end
+    table.insert(steps, "Repetir ciclo de farm...")
+    return steps
 end
 
 --// Grow a Garden 2 Module
@@ -648,12 +837,11 @@ function ErrorMonitor:start()
                 Console:error("[Jogo] " .. message)
                 if AppConfig.apiKey ~= "" then
                     task.spawn(function()
-                        Console:info("Analisando erro automaticamente com IA...")
+                        AIConsole:think("Erro detectado no jogo — iniciando análise automática...")
                         local ok, analysis = AIClient:analyzeError(message, debug.traceback())
                         if ok then
+                            AIConsole:log("done", "Análise automática enviada ao console")
                             Console:ai(analysis)
-                        else
-                            Console:warn("Falha na análise: " .. tostring(analysis))
                         end
                     end)
                 end
@@ -727,8 +915,8 @@ function UI:init()
     -- Container principal
     local main = Instance.new("Frame")
     main.Name = "Main"
-    main.Size = UDim2.new(0, 680, 0, 440)
-    main.Position = UDim2.new(0.5, -340, 0.5, -220)
+    main.Size = UDim2.new(0, 700, 0, 500)
+    main.Position = UDim2.new(0.5, -350, 0.5, -250)
     main.BackgroundColor3 = CONFIG.Background
     main.BorderSizePixel = 0
     main.Active = true
@@ -810,7 +998,7 @@ function UI:init()
     createCorner(minBtn, 8)
     minBtn.MouseButton1Click:Connect(function()
         self.content.Visible = not self.content.Visible
-        main.Size = self.content.Visible and UDim2.new(0, 680, 0, 440) or UDim2.new(0, 680, 0, 48)
+        main.Size = self.content.Visible and UDim2.new(0, 700, 0, 500) or UDim2.new(0, 700, 0, 48)
     end)
 
     -- Tabs
@@ -833,11 +1021,11 @@ function UI:init()
     self.content = content
 
     local pages = {}
-    local tabs = { "Console", "GAG2", "Analisar", "Explorer", "Aprendizado", "Config" }
+    local tabs = { "Console", "IA", "GAG2", "Analisar", "Explorer", "Aprendizado", "Config" }
 
     local function createTab(name)
         local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0, name == "Aprendizado" and 95 or 78, 1, 0)
+        btn.Size = UDim2.new(0, name == "Aprendizado" and 90 or (name == "Analisar" and 72 or 68), 1, 0)
         btn.BackgroundColor3 = CONFIG.Surface
         btn.Font = Enum.Font.GothamSemibold
         btn.TextSize = 13
@@ -873,6 +1061,7 @@ function UI:init()
     end
 
     self:buildConsolePage(pages.Console)
+    self:buildAIConsolePage(pages.IA)
     self:buildGAG2Page(pages.GAG2)
     self:buildAnalyzePage(pages.Analisar)
     self:buildExplorerPage(pages.Explorer)
@@ -975,6 +1164,297 @@ function UI:buildConsolePage(page)
             monitorBtn.BackgroundColor3 = CONFIG.Accent
         end
     end)
+end
+
+function UI:buildAIConsolePage(page)
+    local AI_LOG_COLORS = {
+        start = CONFIG.AccentLight,
+        doing = CONFIG.Info,
+        done = CONFIG.Success,
+        plan = CONFIG.Warning,
+        think = Color3.fromRGB(200, 150, 255),
+        info = CONFIG.TextDim,
+        error = CONFIG.Error,
+        warn = CONFIG.Warning,
+    }
+
+    local STATUS_LABELS = {
+        idle = "● Ociosa",
+        thinking = "◈ Pensando",
+        working = "⟳ Trabalhando",
+        success = "✓ Concluída",
+        error = "✕ Erro",
+    }
+
+    -- Barra de status
+    local statusBar = Instance.new("Frame")
+    statusBar.Size = UDim2.new(1, 0, 0, 28)
+    statusBar.BackgroundColor3 = CONFIG.Surface
+    statusBar.BorderSizePixel = 0
+    statusBar.Parent = page
+    createCorner(statusBar, 6)
+
+    local statusDot = Instance.new("Frame")
+    statusDot.Size = UDim2.new(0, 8, 0, 8)
+    statusDot.Position = UDim2.new(0, 10, 0.5, -4)
+    statusDot.BackgroundColor3 = AI_STATUS_COLORS.idle
+    statusDot.Parent = statusBar
+    createCorner(statusDot, 4)
+
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, -80, 1, 0)
+    statusLabel.Position = UDim2.new(0, 24, 0, 0)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Font = Enum.Font.GothamBold
+    statusLabel.TextSize = 12
+    statusLabel.TextColor3 = CONFIG.Text
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.Text = "IA Console — " .. STATUS_LABELS.idle
+    statusLabel.Parent = statusBar
+
+    local modelBadge = Instance.new("TextLabel")
+    modelBadge.Size = UDim2.new(0, 120, 1, 0)
+    modelBadge.Position = UDim2.new(1, -126, 0, 0)
+    modelBadge.BackgroundTransparency = 1
+    modelBadge.Font = Enum.Font.Code
+    modelBadge.TextSize = 10
+    modelBadge.TextColor3 = CONFIG.TextDim
+    modelBadge.TextXAlignment = Enum.TextXAlignment.Right
+    modelBadge.Text = AppConfig.model or "sem modelo"
+    modelBadge.Parent = statusBar
+
+    -- Painel: Fazendo agora
+    local nowHeader = Instance.new("TextLabel")
+    nowHeader.Size = UDim2.new(1, 0, 0, 18)
+    nowHeader.Position = UDim2.new(0, 0, 0, 34)
+    nowHeader.BackgroundTransparency = 1
+    nowHeader.Font = Enum.Font.GothamBold
+    nowHeader.TextSize = 11
+    nowHeader.TextColor3 = CONFIG.AccentLight
+    nowHeader.TextXAlignment = Enum.TextXAlignment.Left
+    nowHeader.Text = "▶ FAZENDO AGORA"
+    nowHeader.Parent = page
+
+    local nowPanel = Instance.new("Frame")
+    nowPanel.Name = "NowPanel"
+    nowPanel.Size = UDim2.new(1, 0, 0, 44)
+    nowPanel.Position = UDim2.new(0, 0, 0, 54)
+    nowPanel.BackgroundColor3 = Color3.fromRGB(14, 14, 22)
+    nowPanel.BorderSizePixel = 0
+    nowPanel.Parent = page
+    createCorner(nowPanel, 8)
+    createStroke(nowPanel, CONFIG.Accent, 1.2)
+
+    local nowSpinner = Instance.new("TextLabel")
+    nowSpinner.Size = UDim2.new(0, 24, 1, 0)
+    nowSpinner.Position = UDim2.new(0, 8, 0, 0)
+    nowSpinner.BackgroundTransparency = 1
+    nowSpinner.Font = Enum.Font.GothamBold
+    nowSpinner.TextSize = 16
+    nowSpinner.TextColor3 = CONFIG.AccentLight
+    nowSpinner.Text = "◎"
+    nowSpinner.Parent = nowPanel
+
+    local nowText = Instance.new("TextLabel")
+    nowText.Name = "NowText"
+    nowText.Size = UDim2.new(1, -40, 1, -8)
+    nowText.Position = UDim2.new(0, 32, 0, 4)
+    nowText.BackgroundTransparency = 1
+    nowText.Font = Enum.Font.GothamSemibold
+    nowText.TextSize = 13
+    nowText.TextColor3 = CONFIG.Text
+    nowText.TextXAlignment = Enum.TextXAlignment.Left
+    nowText.TextYAlignment = Enum.TextYAlignment.Top
+    nowText.TextWrapped = true
+    nowText.Text = AIConsole.currentAction
+    nowText.Parent = nowPanel
+
+    -- Painel: Próximas ações
+    local planHeader = Instance.new("TextLabel")
+    planHeader.Size = UDim2.new(1, 0, 0, 18)
+    planHeader.Position = UDim2.new(0, 0, 0, 106)
+    planHeader.BackgroundTransparency = 1
+    planHeader.Font = Enum.Font.GothamBold
+    planHeader.TextSize = 11
+    planHeader.TextColor3 = CONFIG.Warning
+    planHeader.TextXAlignment = Enum.TextXAlignment.Left
+    planHeader.Text = "📋 PRÓXIMAS AÇÕES"
+    planHeader.Parent = page
+
+    local planPanel = Instance.new("Frame")
+    planPanel.Size = UDim2.new(1, 0, 0, 88)
+    planPanel.Position = UDim2.new(0, 0, 0, 126)
+    planPanel.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
+    planPanel.BorderSizePixel = 0
+    planPanel.Parent = page
+    createCorner(planPanel, 8)
+    createStroke(planPanel, Color3.fromRGB(45, 45, 60))
+
+    local planScroll = Instance.new("ScrollingFrame")
+    planScroll.Name = "PlanScroll"
+    planScroll.Size = UDim2.new(1, -8, 1, -8)
+    planScroll.Position = UDim2.new(0, 4, 0, 4)
+    planScroll.BackgroundTransparency = 1
+    planScroll.BorderSizePixel = 0
+    planScroll.ScrollBarThickness = 3
+    planScroll.ScrollBarImageColor3 = CONFIG.Warning
+    planScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    planScroll.Parent = planPanel
+
+    local planLayout = Instance.new("UIListLayout")
+    planLayout.Padding = UDim.new(0, 3)
+    planLayout.Parent = planScroll
+
+    -- Painel: Log da IA
+    local logHeader = Instance.new("TextLabel")
+    logHeader.Size = UDim2.new(1, -90, 0, 18)
+    logHeader.Position = UDim2.new(0, 0, 0, 222)
+    logHeader.BackgroundTransparency = 1
+    logHeader.Font = Enum.Font.GothamBold
+    logHeader.TextSize = 11
+    logHeader.TextColor3 = CONFIG.Info
+    logHeader.TextXAlignment = Enum.TextXAlignment.Left
+    logHeader.Text = "📜 LOG DA IA"
+    logHeader.Parent = page
+
+    local clearAiBtn = self:createButton(page, "Limpar", UDim2.new(0, 70, 0, 22), UDim2.new(1, -70, 0, 220), CONFIG.SurfaceLight)
+    clearAiBtn.TextSize = 11
+
+    local logPanel = Instance.new("Frame")
+    logPanel.Size = UDim2.new(1, 0, 1, -256)
+    logPanel.Position = UDim2.new(0, 0, 0, 246)
+    logPanel.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+    logPanel.BorderSizePixel = 0
+    logPanel.Parent = page
+    createCorner(logPanel, 8)
+    createStroke(logPanel, Color3.fromRGB(35, 35, 50))
+
+    local logScroll = Instance.new("ScrollingFrame")
+    logScroll.Name = "LogScroll"
+    logScroll.Size = UDim2.new(1, -6, 1, -6)
+    logScroll.Position = UDim2.new(0, 3, 0, 3)
+    logScroll.BackgroundTransparency = 1
+    logScroll.BorderSizePixel = 0
+    logScroll.ScrollBarThickness = 4
+    logScroll.ScrollBarImageColor3 = CONFIG.Accent
+    logScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    logScroll.Parent = logPanel
+
+    local logLayout = Instance.new("UIListLayout")
+    logLayout.Padding = UDim.new(0, 1)
+    logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    logLayout.Parent = logScroll
+
+    logLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        logScroll.CanvasSize = UDim2.new(0, 0, 0, logLayout.AbsoluteContentSize.Y + 4)
+        logScroll.CanvasPosition = Vector2.new(0, math.max(0, logLayout.AbsoluteContentSize.Y))
+    end)
+
+    planLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        planScroll.CanvasSize = UDim2.new(0, 0, 0, planLayout.AbsoluteContentSize.Y + 4)
+    end)
+
+    local function renderPlan()
+        for _, c in ipairs(planScroll:GetChildren()) do
+            if c:IsA("TextLabel") then c:Destroy() end
+        end
+        if #AIConsole.plannedActions == 0 then
+            local empty = Instance.new("TextLabel")
+            empty.Size = UDim2.new(1, -8, 0, 20)
+            empty.BackgroundTransparency = 1
+            empty.Font = Enum.Font.Gotham
+            empty.TextSize = 11
+            empty.TextColor3 = CONFIG.TextDim
+            empty.TextXAlignment = Enum.TextXAlignment.Left
+            empty.Text = "  Nenhuma ação planejada"
+            empty.Parent = planScroll
+            return
+        end
+        for i, action in ipairs(AIConsole.plannedActions) do
+            local row = Instance.new("TextLabel")
+            row.Size = UDim2.new(1, -8, 0, 0)
+            row.AutomaticSize = Enum.AutomaticSize.Y
+            row.BackgroundTransparency = 1
+            row.Font = Enum.Font.Code
+            row.TextSize = 11
+            row.TextXAlignment = Enum.TextXAlignment.Left
+            row.TextYAlignment = Enum.TextYAlignment.Top
+            row.TextWrapped = true
+            row.TextColor3 = i == 1 and CONFIG.Warning or CONFIG.TextDim
+            row.Text = string.format("  %d. %s%s", i, action, i == 1 and "  ← próximo" or "")
+            row.Parent = planScroll
+        end
+    end
+
+    local function addLogLine(entry)
+        local line = Instance.new("TextLabel")
+        line.Size = UDim2.new(1, -8, 0, 0)
+        line.AutomaticSize = Enum.AutomaticSize.Y
+        line.BackgroundTransparency = 1
+        line.Font = Enum.Font.Code
+        line.TextSize = 12
+        line.TextXAlignment = Enum.TextXAlignment.Left
+        line.TextYAlignment = Enum.TextYAlignment.Top
+        line.TextWrapped = true
+        line.TextColor3 = AI_LOG_COLORS[entry.kind] or CONFIG.Text
+        line.Text = string.format("[%s] %s", entry.time, entry.message)
+        line.Parent = logScroll
+    end
+
+    local function refreshAll()
+        local st = AIConsole.status
+        statusDot.BackgroundColor3 = AI_STATUS_COLORS[st] or CONFIG.TextDim
+        statusLabel.Text = "IA Console — " .. (STATUS_LABELS[st] or st)
+        nowText.Text = AIConsole.currentAction
+        nowSpinner.Text = (st == "working" or st == "thinking") and "⟳" or "◎"
+        nowSpinner.TextColor3 = AI_STATUS_COLORS[st] or CONFIG.TextDim
+        nowPanel.BackgroundColor3 = st == "error" and Color3.fromRGB(28, 14, 14)
+            or st == "success" and Color3.fromRGB(14, 22, 18)
+            or Color3.fromRGB(14, 14, 22)
+        renderPlan()
+    end
+
+    for _, entry in ipairs(AIConsole.logs) do
+        addLogLine(entry)
+    end
+
+    local lastLogCount = #AIConsole.logs
+    AIConsole:onUpdate(function()
+        refreshAll()
+        while lastLogCount < #AIConsole.logs do
+            lastLogCount += 1
+            addLogLine(AIConsole.logs[lastLogCount])
+        end
+    end)
+
+    refreshAll()
+
+    -- Animação do spinner
+    task.spawn(function()
+        local frames = { "⟳", "↻", "⟲", "↺" }
+        local i = 1
+        while page.Parent do
+            if AIConsole.status == "working" or AIConsole.status == "thinking" then
+                nowSpinner.Text = frames[i]
+                i = i % #frames + 1
+            end
+            task.wait(0.25)
+        end
+    end)
+
+    clearAiBtn.MouseButton1Click:Connect(function()
+        for _, c in ipairs(logScroll:GetChildren()) do
+            if c:IsA("TextLabel") then c:Destroy() end
+        end
+        AIConsole.logs = {}
+        AIConsole:setCurrent("Aguardando comandos...")
+        AIConsole:clearPlan()
+        AIConsole:setStatus("idle")
+    end)
+
+    AIConsole:log("info", "Nx Hub v" .. CONFIG.Version .. " — Console da IA ativo")
+    AIConsole:plan("Analisar erros (aba Analisar ou Monitor automático)")
+    AIConsole:plan("Upar conta no GAG2 (aba GAG2 → UPAR CONTA)")
 end
 
 function UI:createButton(parent, text, size, pos, color)
@@ -1455,12 +1935,12 @@ local function init()
     UI:init()
 
     if GAG2 then
-        GAG2:init(Console, CONFIG)
+        GAG2:init(Console, CONFIG, AIConsole)
     end
 
     Console:success(CONFIG.Name .. " v" .. CONFIG.Version .. " carregado.")
     Console:info("Pressione RightShift para abrir/fechar.")
-    Console:info("Configure sua chave API na aba Config.")
+    Console:info("Aba IA = console com ações atuais e planejadas da IA.")
 
     if GAG2 and GAG2:isInGame() then
         Console:success("Grow a Garden 2 detectado! Vá na aba GAG2 e clique em UPAR CONTA.")
