@@ -17,7 +17,7 @@ local LocalPlayer = Players.LocalPlayer
 --// Configuração
 local CONFIG = {
     Name = "Nx Hub",
-    Version = "1.0.0",
+    Version = "1.1.0",
     DataFolder = "NxHub",
     LearnFile = "NxHub/learned_errors.json",
     ConfigFile = "NxHub/config.json",
@@ -603,6 +603,27 @@ function AIClient:testConnection()
     return ok, result
 end
 
+--// Grow a Garden 2 Module
+local GAG2
+do
+    local gagPath = "GAG2Module.lua"
+    local loaded
+    if type(readfile) == "function" and type(isfile) == "function" and isfile(gagPath) then
+        local ok, mod = pcall(function() return loadstring(readfile(gagPath))() end)
+        if ok and mod then loaded = mod end
+    end
+    if not loaded and type(readfile) == "function" then
+        local ok, mod = pcall(function() return loadstring(readfile("NxHub/GAG2Module.lua"))() end)
+        if ok and mod then loaded = mod end
+    end
+    GAG2 = loaded or (function()
+        local ok, mod = pcall(function()
+            return loadstring(game:HttpGet("https://raw.githubusercontent.com/nickzin0041/Meu-primeiro-script/cursor/nx-hub-script-c729/GAG2Module.lua"))()
+        end)
+        return ok and mod or nil
+    end)()
+end
+
 --// Monitor de erros
 local ErrorMonitor = {
     active = false,
@@ -812,11 +833,11 @@ function UI:init()
     self.content = content
 
     local pages = {}
-    local tabs = { "Console", "Analisar", "Explorer", "Aprendizado", "Config" }
+    local tabs = { "Console", "GAG2", "Analisar", "Explorer", "Aprendizado", "Config" }
 
     local function createTab(name)
         local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0, 100, 1, 0)
+        btn.Size = UDim2.new(0, name == "Aprendizado" and 95 or 78, 1, 0)
         btn.BackgroundColor3 = CONFIG.Surface
         btn.Font = Enum.Font.GothamSemibold
         btn.TextSize = 13
@@ -852,6 +873,7 @@ function UI:init()
     end
 
     self:buildConsolePage(pages.Console)
+    self:buildGAG2Page(pages.GAG2)
     self:buildAnalyzePage(pages.Analisar)
     self:buildExplorerPage(pages.Explorer)
     self:buildLearningPage(pages.Aprendizado)
@@ -1180,6 +1202,180 @@ function UI:buildLearningPage(page)
     listFrame.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 16)
 end
 
+function UI:buildGAG2Page(page)
+    local notAvailable = Instance.new("TextLabel")
+    notAvailable.Size = UDim2.new(1, 0, 1, 0)
+    notAvailable.BackgroundTransparency = 1
+    notAvailable.Font = Enum.Font.Gotham
+    notAvailable.TextSize = 14
+    notAvailable.TextColor3 = CONFIG.Warning
+    notAvailable.TextWrapped = true
+    notAvailable.Text = "Módulo GAG2 não carregado.\nColoque GAG2Module.lua na mesma pasta do executor."
+    notAvailable.Visible = GAG2 == nil
+    notAvailable.Parent = page
+
+    if not GAG2 then return end
+
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, 0, 0, 50)
+    statusLabel.BackgroundColor3 = CONFIG.Surface
+    statusLabel.Font = Enum.Font.GothamSemibold
+    statusLabel.TextSize = 12
+    statusLabel.TextColor3 = CONFIG.AccentLight
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+    statusLabel.TextWrapped = true
+    statusLabel.Text = GAG2:getStatusText()
+    statusLabel.Parent = page
+    createCorner(statusLabel, 8)
+    createPadding(statusLabel, 8, 8, 8, 8)
+
+    task.spawn(function()
+        while page.Parent do
+            if page.Visible then
+                statusLabel.Text = GAG2:getStatusText()
+            end
+            task.wait(1)
+        end
+    end)
+
+    local masterBtn = self:createButton(page, "🚀 UPAR CONTA (Auto Tudo)", UDim2.new(1, 0, 0, 40), UDim2.new(0, 0, 0, 56), CONFIG.Accent)
+    masterBtn.Font = Enum.Font.GothamBold
+    masterBtn.TextSize = 14
+
+    local stopBtn = self:createButton(page, "⏹ Parar", UDim2.new(0, 90, 0, 34), UDim2.new(1, -90, 0, 104), CONFIG.Error)
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, 0, 1, -148)
+    scroll.Position = UDim2.new(0, 0, 0, 148)
+    scroll.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 4
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.Parent = page
+    createCorner(scroll, 8)
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 4)
+    layout.Parent = scroll
+
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 8)
+    end)
+
+    local toggles = {
+        { key = "autoBuySeeds", label = "Auto Comprar Sementes" },
+        { key = "autoPlant", label = "Auto Plantar" },
+        { key = "autoWater", label = "Auto Regar" },
+        { key = "autoHarvest", label = "Auto Colher" },
+        { key = "autoCollect", label = "Auto Coletar (chão)" },
+        { key = "autoSell", label = "Auto Vender" },
+        { key = "autoBuyGear", label = "Auto Comprar Gear" },
+        { key = "autoExpand", label = "Auto Expandir Plot" },
+        { key = "autoOpenEggs", label = "Auto Abrir Ovos" },
+        { key = "autoRedeemCodes", label = "Auto Resgatar Códigos" },
+        { key = "autoStealNight", label = "Auto Roubar (noite)" },
+        { key = "antiAfk", label = "Anti-AFK" },
+    }
+
+    local function makeToggle(settingKey, label)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -8, 0, 32)
+        row.BackgroundColor3 = CONFIG.Surface
+        row.Parent = scroll
+        createCorner(row, 6)
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -50, 1, 0)
+        lbl.Position = UDim2.new(0, 10, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextSize = 12
+        lbl.TextColor3 = CONFIG.Text
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Text = label
+        lbl.Parent = row
+
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 36, 0, 22)
+        btn.Position = UDim2.new(1, -42, 0.5, -11)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
+        btn.TextColor3 = CONFIG.Text
+        btn.Parent = row
+        createCorner(btn, 4)
+
+        local function refresh()
+            local on = GAG2.Settings[settingKey]
+            btn.Text = on and "ON" or "OFF"
+            btn.BackgroundColor3 = on and CONFIG.Success or CONFIG.SurfaceLight
+        end
+        refresh()
+
+        btn.MouseButton1Click:Connect(function()
+            GAG2.Settings[settingKey] = not GAG2.Settings[settingKey]
+            refresh()
+            Console:info("[GAG2] " .. label .. ": " .. (GAG2.Settings[settingKey] and "ON" or "OFF"))
+        end)
+    end
+
+    for _, t in ipairs(toggles) do
+        makeToggle(t.key, t.label)
+    end
+
+    local threshRow = Instance.new("Frame")
+    threshRow.Size = UDim2.new(1, -8, 0, 36)
+    threshRow.BackgroundColor3 = CONFIG.Surface
+    threshRow.Parent = scroll
+    createCorner(threshRow, 6)
+
+    local threshLbl = Instance.new("TextLabel")
+    threshLbl.Size = UDim2.new(0.5, 0, 1, 0)
+    threshLbl.Position = UDim2.new(0, 10, 0, 0)
+    threshLbl.BackgroundTransparency = 1
+    threshLbl.Font = Enum.Font.Gotham
+    threshLbl.TextSize = 12
+    threshLbl.TextColor3 = CONFIG.Text
+    threshLbl.TextXAlignment = Enum.TextXAlignment.Left
+    threshLbl.Text = "Mín. crops p/ vender:"
+    threshLbl.Parent = threshRow
+
+    local threshBox = Instance.new("TextBox")
+    threshBox.Size = UDim2.new(0, 50, 0, 24)
+    threshBox.Position = UDim2.new(1, -60, 0.5, -12)
+    threshBox.BackgroundColor3 = CONFIG.SurfaceLight
+    threshBox.Font = Enum.Font.GothamBold
+    threshBox.TextSize = 13
+    threshBox.TextColor3 = CONFIG.Text
+    threshBox.Text = tostring(GAG2.Settings.sellThreshold)
+    threshBox.Parent = threshRow
+    createCorner(threshBox, 4)
+
+    threshBox.FocusLost:Connect(function()
+        local n = tonumber(threshBox.Text)
+        if n then GAG2.Settings.sellThreshold = math.floor(n) end
+        threshBox.Text = tostring(GAG2.Settings.sellThreshold)
+    end)
+
+    masterBtn.MouseButton1Click:Connect(function()
+        if GAG2.State.running then
+            Console:warn("[GAG2] Já está rodando!")
+            return
+        end
+        local ok = GAG2:startAutoUp()
+        if ok then
+            masterBtn.Text = "✓ FARMANDO..."
+            masterBtn.BackgroundColor3 = CONFIG.Success
+        end
+    end)
+
+    stopBtn.MouseButton1Click:Connect(function()
+        GAG2:stopAutoUp()
+        masterBtn.Text = "🚀 UPAR CONTA (Auto Tudo)"
+        masterBtn.BackgroundColor3 = CONFIG.Accent
+    end)
+end
+
 function UI:buildConfigPage(page)
     local y = 0
     local function label(text)
@@ -1258,9 +1454,17 @@ local function init()
 
     UI:init()
 
+    if GAG2 then
+        GAG2:init(Console, CONFIG)
+    end
+
     Console:success(CONFIG.Name .. " v" .. CONFIG.Version .. " carregado.")
     Console:info("Pressione RightShift para abrir/fechar.")
     Console:info("Configure sua chave API na aba Config.")
+
+    if GAG2 and GAG2:isInGame() then
+        Console:success("Grow a Garden 2 detectado! Vá na aba GAG2 e clique em UPAR CONTA.")
+    end
 
     if AppConfig.apiKey ~= "" then
         Console:success("Chave API encontrada. Pronto para análise.")
