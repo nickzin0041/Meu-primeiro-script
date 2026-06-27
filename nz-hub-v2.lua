@@ -475,7 +475,7 @@ local function stripFences(s) s=s:gsub("```json",""):gsub("```",""); return s:ma
 
 local function callClaude(stateTable)
     if not httpRequest then log("Sem função HTTP no executor.","error"); return nil end
-    if CONFIG.apiKey == "" then log("API key vazia.","error"); return nil end
+    if CONFIG.apiKey == "" or CONFIG.apiKey == "COLE_SUA_CHAVE_AQUI" then log("API key vazia.","error"); return nil end
 
     local body = HttpService:JSONEncode({
         model = CONFIG.model, max_tokens = CONFIG.maxTokens, system = SYSTEM_PROMPT,
