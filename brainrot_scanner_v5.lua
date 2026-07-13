@@ -22,7 +22,7 @@ local http_request_fn = (syn and syn.request) or (http and http.request) or requ
 -- ╚══════════════════════════════════════════════════════════╝
 local RAILWAY_URL    = "https://nodejs-server-production-3131.up.railway.app"
 local DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1523411500763578480/3j_4onUIRlVe3PUzlqgcvCbFlaJweaEnL5W0tjd0-b6dffPsk6bNLEYXguBqwlCI-D9H"
-local SCRIPT_URL     = "https://pastefy.app/OCc3iad8/raw"
+local SCRIPT_URL     = "https://pastefy.app/6pv7QF00/raw"
 local GAME_ID        = 109983668079237
 local SCAN_INTERVAL      = 4    -- segundos entre varreduras
 local HOP_TIMEOUT        = 12   -- segundos sem achar → hop
@@ -101,12 +101,20 @@ local function getQueueFn()
     return nil, nil
 end
 
-local function queueOnTeleport()
+local function queueOnTeleport(hopCount)
     local queueFn, queueName = getQueueFn()
     if not queueFn then
         warn("[AutoLoad] queue_on_teleport não disponível — auto-load desativado!")
         return false, nil
     end
+
+    local nextHop = hopCount or _G._brainrotHopCount or 0
+    local bootstrap = ([[
+        _G._brainrotHopCount      = %d
+        _G._brainrotPendingRestart = true
+        _G._scannerRunning        = false
+        task.wait(1)
+    ]]):format(nextHop)
 
     local ok, source = pcall(function()
         return debug.getinfo(1, "S").source
@@ -114,42 +122,38 @@ local function queueOnTeleport()
     if ok and type(source) == "string" and source:sub(1, 1) == "@" then
         local path = source:sub(2)
         if type(isfile) == "function" and isfile(path) then
+            local quotedPath = ("%q"):format(path)
+            local cmd = bootstrap .. "dofile(" .. quotedPath .. ")"
+            local queued = pcall(queueFn, cmd)
+            if queued then
+                print(("[AutoLoad] ✅ %s via dofile (%s)"):format(queueName, path))
+                return true, "dofile"
+            end
+
             if type(readfile) == "function" then
                 local readOk, contents = pcall(readfile, path)
                 if readOk and type(contents) == "string" and #contents > 0 then
-                    local queued = pcall(queueFn, contents)
-                    if queued then
-                        print(("[AutoLoad] ✅ %s configurado via readfile! (%s)"):format(queueName, path))
+                    local queued2 = pcall(queueFn, bootstrap .. contents)
+                    if queued2 then
+                        print(("[AutoLoad] ✅ %s via readfile (%s)"):format(queueName, path))
                         return true, "readfile"
                     end
                 end
             end
-
-            local quotedPath = ("%q"):format(path)
-            local queued = pcall(queueFn, "dofile(" .. quotedPath .. ")")
-            if queued then
-                print(("[AutoLoad] ✅ %s configurado via dofile! (%s)"):format(queueName, path))
-                return true, "dofile"
-            end
         end
     end
 
-    -- Fallback: recarrega pela URL quando o script foi colado (não está em arquivo)
     if SCRIPT_URL and SCRIPT_URL ~= "" then
-        local nextHop = _G._brainrotHopCount or 0
-        local cmd = ([[
-            _G._brainrotHopCount = %d
-            _G._scannerRunning   = false
-            task.wait(2)
+        local cmd = bootstrap .. ([[
             local ok, err = pcall(function()
                 loadstring(game:HttpGet("%s"))()
             end)
             if not ok then warn("[AutoLoad] Erro ao recarregar: " .. tostring(err)) end
-        ]]):format(nextHop, SCRIPT_URL)
+        ]]):format(SCRIPT_URL)
 
         local queued = pcall(queueFn, cmd)
         if queued then
-            warn(("[AutoLoad] ⚠️ %s via URL (salve o script em arquivo para auto-load confiável)"):format(queueName))
+            print(("[AutoLoad] ✅ %s via URL (hop #%d)"):format(queueName, nextHop))
             return true, "url"
         end
     end
@@ -808,17 +812,24 @@ local function hopServer(hopCount)
     local currentJobId = game.JobId
     local tryNum       = 0
     local apiFails     = 0
+    local queueArmed   = false
 
-    -- Função de teleporte que tenta métodos do executor primeiro
-    local function doTeleport(jobId)
-        local queued, method = queueOnTeleport()
+    local function armAutoLoad()
+        if queueArmed then return end
+        local queued, method = queueOnTeleport(hopCount)
+        queueArmed = queued
         if queued then
             print(("[Scanner] Queue on teleport registrado (%s)"):format(method or "?"))
         else
             warn("[Scanner] Queue on teleport NÃO registrado — script não reinicia após hop!")
         end
+    end
 
-        -- Método do executor (bypassa Verify Teleports)
+    armAutoLoad()
+
+    local function doTeleport(jobId)
+        armAutoLoad()
+
         local ok = false
         if jobId then
             pcall(function()
@@ -925,11 +936,12 @@ end
 -- ║  🚀  ENTRY POINT                                         ║
 -- ╚══════════════════════════════════════════════════════════╝
 
--- Evita múltiplas instâncias simultâneas
-if _G._scannerRunning then
+-- Evita múltiplas instâncias, mas permite reinício após hop
+if _G._scannerRunning and not _G._brainrotPendingRestart then
     warn("[Scanner] Já está rodando! Encerrando instância duplicada.")
     return
 end
+_G._brainrotPendingRestart = false
 _G._scannerRunning = true
 
 -- Hop count persistido via _G (sobrevive entre re-execuções do executor)
@@ -940,6 +952,9 @@ task.wait(5)
 print(("[Scanner] 🟢 Iniciado — hop #%d — server: %s"):format(
     hopCount, game.JobId:sub(1, 8)
 ))
+
+-- Re-arma auto-load logo ao entrar no server (backup caso o hop não registre a tempo)
+queueOnTeleport(hopCount + 1)
 
 createHUD(hopCount)
 
@@ -956,8 +971,9 @@ local function startHop(nextHop)
     stopping  = true
     if heartbeat then heartbeat:Disconnect() end
 
-    _G._brainrotHopCount = nextHop
-    _G._scannerRunning   = false
+    _G._brainrotHopCount      = nextHop
+    _G._brainrotPendingRestart = true
+    _G._scannerRunning        = false
 
     task.spawn(function()
         hopServer(nextHop)
