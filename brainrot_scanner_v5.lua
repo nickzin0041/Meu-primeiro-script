@@ -12,8 +12,10 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService     = game:GetService("HttpService")
 local RunService      = game:GetService("RunService")
 local TweenService    = game:GetService("TweenService")
+local RS              = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
+local http_request_fn = (syn and syn.request) or (http and http.request) or request
 
 -- ╔══════════════════════════════════════════════════════════╗
 -- ║  ⚙️  CONFIGURAÇÃO                                        ║
@@ -22,8 +24,9 @@ local RAILWAY_URL    = "https://nodejs-server-production-3131.up.railway.app"
 local DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1523411500763578480/3j_4onUIRlVe3PUzlqgcvCbFlaJweaEnL5W0tjd0-b6dffPsk6bNLEYXguBqwlCI-D9H"
 local SCRIPT_URL     = "https://pastefy.app/OCc3iad8/raw"
 local GAME_ID        = 109983668079237
-local SCAN_INTERVAL  = 4    -- segundos entre varreduras
-local HOP_TIMEOUT    = 12   -- segundos sem achar → hop
+local SCAN_INTERVAL      = 4    -- segundos entre varreduras
+local HOP_TIMEOUT        = 12   -- segundos sem achar → hop
+local NOTIFY_BEFORE_HOP  = 3    -- segundos após achar antes de hopar
 
 -- ╔══════════════════════════════════════════════════════════╗
 -- ║  🌐  HTTP DO EXECUTOR                                    ║
@@ -281,6 +284,160 @@ for _, s in ipairs(SECRET_LIST) do
 end
 
 -- ╔══════════════════════════════════════════════════════════╗
+-- ║  🎨  EMOJIS — MUTAÇÕES E TRAITS (Cerberus)               ║
+-- ╚══════════════════════════════════════════════════════════╝
+local MUTACOES = {
+    ["default"]     = "<:mutation_default:1521269747629555824>",
+    ["gold"]        = "<:mutation_gold:1521268932709974157>",
+    ["diamond"]     = "<:mutation_diamond:1521269702381408415>",
+    ["rainbow"]     = "<:mutation_rainbow:1521270357577957436>",
+    ["bloodrot"]    = "<:mutation_bloodrot:1521269853959491714>",
+    ["candy"]       = "<:mutation_candy:1521269909110128824>",
+    ["lava"]        = "<:mutation_lava:1521269950650646699>",
+    ["galaxy"]      = "<:mutation_galaxy:1521270022440484864>",
+    ["yinyang"]     = "<:mutation_yinyang:1521270132419199097>",
+    ["radioactive"] = "<:mutation_radioactive:1521270081512800408>",
+    ["cursed"]      = "<:mutation_cursed:1521270177168363572>",
+    ["divine"]      = "<:mutation_divine:1521270216573714462>",
+    ["cyber"]       = "<:mutation_cyber:1521270257556132021>",
+    ["phantom"]     = "<:mutation_phantom:1521270310517735564>",
+    ["normal"]      = "<:mutation_default:1521269747629555824>",
+}
+
+local TRAITS = {
+    ["10b"] = "<:trait_10b:1521272397989412984>",
+    ["1year"] = "<:trait_1year:1521277366733897728>",
+    ["26"] = "<:trait_26:1521277186986868887>",
+    ["brazil"] = "<:trait_brazil:1521275212186910942>",
+    ["bubblegum"] = "<:trait_bubblegum:1521273169233838253>",
+    ["burger"] = "<:trait_buger:1521277663141036166>",
+    ["bunnyears"] = "<:trait_bunnyears:1521277785912643875>",
+    ["cometstruck"] = "<:trait_cometstruck:1521272984138944623>",
+    ["crab"] = "<:trait_crab:1521276066751189064>",
+    ["explosive"] = "<:trait_explosive:1521272608811651163>",
+    ["extinct"] = "<:trait_extinct:1521273086647730348>",
+    ["galactic"] = "<:trait_galactic:1521272812323475596>",
+    ["glitched"] = "<:trait_glitched:1521275953362501703>",
+    ["halo"] = "<:trait_halo:1521277469976559706>",
+    ["indonesian"] = "<:trait_indonesian:1521273979715981532>",
+    ["jack"] = "<:trait_jack_o_lantern_pet:1521276738225574019>",
+    ["lucky"] = "<:trait_lucky:1521277069286183083>",
+    ["matteo"] = "<:trait_matteo_hat:1521273416940912772>",
+    ["nyan"] = "<:trait_nyan:1521276603622227978>",
+    ["rain"] = "<:trait_rain:1521271606838821066>",
+    ["rap"] = "<:trait_rap_concert:1521274475411406969>",
+    ["reindeer"] = "<:trait_reindeer_pet:1521276828050784336>",
+    ["rip"] = "<:trait_rip_tombstone:1521273245263728681>",
+    ["sleepy"] = "<:trait_sleepy:1521270943123636234>",
+    ["snowy"] = "<:trait_snowy:1521271734832205855>",
+    ["sombrero"] = "<:trait_sombrero:1521274116143845456>",
+    ["spider"] = "<:trait_spider:1521272052349272175>",
+    ["taco"] = "<:trait_taco:1521271842713899191>",
+    ["tie"] = "<:trait_tie:1521273906730631338>",
+    ["tung"] = "<:trait_tung_tung_attack:1521274561423741089>",
+    ["ufo"] = "<:trait_ufo:1521271955141955675>",
+    ["witching"] = "<:trait_witching_hour:1521273754481856595>",
+}
+
+-- ╔══════════════════════════════════════════════════════════╗
+-- ║  📦  MÓDULOS DO JOGO (scan avançado)                     ║
+-- ╚══════════════════════════════════════════════════════════╝
+local Synchronizer, AnimalsData, AnimalsShared
+local useSync = false
+
+local function loadModules()
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+
+    for tries = 1, 5 do
+        local ok = pcall(function()
+            local Packages = RS:FindFirstChild("Packages")
+            local Datas    = RS:FindFirstChild("Datas")
+            local Shared   = RS:FindFirstChild("Shared")
+            if Packages and Datas and Shared then
+                local syncModule    = Packages:FindFirstChild("Synchronizer")
+                local animalsData   = Datas:FindFirstChild("Animals")
+                local animalsShared = Shared:FindFirstChild("Animals")
+                if syncModule and animalsData and animalsShared then
+                    Synchronizer  = require(syncModule)
+                    AnimalsData   = require(animalsData)
+                    AnimalsShared = require(animalsShared)
+                end
+            end
+        end)
+        if ok and Synchronizer and AnimalsData and AnimalsShared then
+            useSync = true
+            print("[Scanner] Módulos carregados → modo SYNC")
+            return
+        end
+        print(("[Scanner] Módulos: tentativa %d/5..."):format(tries))
+        task.wait(2)
+    end
+    print("[Scanner] Módulos NÃO carregados → modo LEGADO")
+end
+
+loadModules()
+
+local function isFusing(a)
+    return a.Machine and a.Machine.Type == "Fuse" and a.Machine.Active
+end
+
+local function isInDuel(a)
+    if a.Machine and type(a.Machine) == "table" then
+        local mt = a.Machine.Type
+        if type(mt) == "string" and mt:lower():find("duel") then return true end
+    end
+    return a.InDuel == true or a.inDuel == true
+end
+
+local function getMutationEmoji(mutation)
+    if not mutation or mutation == "" then
+        return MUTACOES["default"] or "🧬"
+    end
+    return MUTACOES[mutation:lower()] or MUTACOES["default"] or "🧬"
+end
+
+local function formatTraits(traitsTable)
+    if not traitsTable or #traitsTable == 0 then return "" end
+    local result = {}
+    for _, trait in ipairs(traitsTable) do
+        local traitLower = trait:lower()
+        if traitLower == ":3" or traitLower == "3" then
+            table.insert(result, "<:trait_3:1516817015392833577>")
+        else
+            local emoji = TRAITS[traitLower]
+            table.insert(result, emoji or ("[" .. trait:upper() .. "]"))
+        end
+    end
+    return table.concat(result, " ")
+end
+
+local function getBrainrotImage(name)
+    if not http_request_fn then return nil end
+    local ok, result = pcall(function()
+        local url = "https://stealabrainrot.fandom.com/api.php?action=query&titles="
+            .. HttpService:UrlEncode(name) .. "&prop=pageimages&piprop=original&format=json"
+        local resp = http_request_fn({ Url = url, Method = "GET" })
+        if resp and resp.StatusCode == 200 then
+            local d = HttpService:JSONDecode(resp.Body)
+            if d and d.query and d.query.pages then
+                for _, page in pairs(d.query.pages) do
+                    if page.original and page.original.source then
+                        return page.original.source
+                    end
+                end
+            end
+        end
+    end)
+    return ok and result or nil
+end
+
+local function buildJoinUrl(jobId)
+    return ("https://www.roblox.com/games/start?placeId=%d&gameInstanceId=%s"):format(game.PlaceId, jobId)
+end
+
+-- ╔══════════════════════════════════════════════════════════╗
 -- ║  🛠️  UTILITÁRIOS                                         ║
 -- ╚══════════════════════════════════════════════════════════╝
 local function formatDPS(n)
@@ -387,38 +544,155 @@ end
 -- ╔══════════════════════════════════════════════════════════╗
 -- ║  🔍  VARREDURA DOS PLOTS                                 ║
 -- ╚══════════════════════════════════════════════════════════╝
+local function isSecretName(name)
+    return SECRET_LOOKUP[normalizeName(name)] ~= nil
+end
+
 local function scanForSecret()
-    local plotsFolder = workspace:FindFirstChild("Plots")
-    if not plotsFolder then return nil end
-    for _, plot in ipairs(plotsFolder:GetChildren()) do
-        for _, obj in ipairs(plot:GetDescendants()) do
-            local dps = SECRET_LOOKUP[normalizeName(obj.Name)]
-            if dps then
-                return { name = obj.Name, dps = dps }
+    local results = {}
+
+    if useSync then
+        local plots = workspace:FindFirstChild("Plots")
+        if not plots then return nil end
+
+        for _, plot in ipairs(plots:GetChildren()) do
+            local ok, pot = pcall(function() return Synchronizer:Get(plot.Name) end)
+            if not ok or not pot then continue end
+            local ok2, list = pcall(function() return pot:Get("AnimalList") end)
+            if not ok2 or type(list) ~= "table" then continue end
+
+            local ownerName = "?"
+            local owOk, owVal = pcall(function() return pot:Get("Owner") end)
+            if owOk and owVal ~= nil then
+                ownerName = type(owVal) == "string" and owVal or tostring(owVal)
+            end
+
+            for _, animalData in pairs(list) do
+                if type(animalData) ~= "table" then continue end
+                if isFusing(animalData) then continue end
+
+                local rawName = animalData.Index
+                if not rawName or not AnimalsData[rawName] then continue end
+
+                local data = animalData.Data or animalData
+                local mutation = data.Mutation
+                if not mutation or mutation == "" then mutation = "Normal" end
+
+                local traitsTable = {}
+                if type(data.Traits) == "table" then
+                    if #data.Traits > 0 then
+                        for _, t in ipairs(data.Traits) do
+                            if type(t) == "string" then table.insert(traitsTable, t) end
+                        end
+                    else
+                        for tName, enabled in pairs(data.Traits) do
+                            if enabled then table.insert(traitsTable, tName) end
+                        end
+                    end
+                end
+
+                local displayName = rawName
+                local info = AnimalsData[rawName]
+                if info and info.DisplayName then displayName = info.DisplayName end
+
+                if not isSecretName(displayName) and not isSecretName(rawName) then continue end
+
+                local dps = SECRET_LOOKUP[normalizeName(displayName)]
+                    or SECRET_LOOKUP[normalizeName(rawName)]
+                    or 0
+
+                local ok3, genValue = pcall(function()
+                    return AnimalsShared:GetGeneration(
+                        rawName, mutation,
+                        #traitsTable > 0 and traitsTable or nil, nil
+                    )
+                end)
+                if ok3 and type(genValue) == "number" and genValue > dps then
+                    dps = genValue
+                end
+
+                table.insert(results, {
+                    name       = displayName,
+                    rawName    = rawName,
+                    dps        = dps,
+                    mutation   = mutation,
+                    emojiMut   = getMutationEmoji(mutation),
+                    traits     = formatTraits(traitsTable),
+                    ownerName  = ownerName,
+                    inDuel     = isInDuel(animalData),
+                    fusing     = isFusing(animalData),
+                })
+            end
+        end
+    else
+        local plotsFolder = workspace:FindFirstChild("Plots")
+        if not plotsFolder then return nil end
+        for _, plot in ipairs(plotsFolder:GetChildren()) do
+            for _, obj in ipairs(plot:GetDescendants()) do
+                local dps = SECRET_LOOKUP[normalizeName(obj.Name)]
+                if dps then
+                    table.insert(results, {
+                        name      = obj.Name,
+                        rawName   = obj.Name,
+                        dps       = dps,
+                        mutation  = "Normal",
+                        emojiMut  = getMutationEmoji("Normal"),
+                        traits    = "",
+                        ownerName = "?",
+                    })
+                end
             end
         end
     end
-    return nil
+
+    if #results == 0 then return nil end
+    table.sort(results, function(a, b) return a.dps > b.dps end)
+    return results[1], results
 end
 
 -- ╔══════════════════════════════════════════════════════════╗
 -- ║  📡  ENVIA AO RAILWAY (que repassa ao Discord)           ║
 -- ╚══════════════════════════════════════════════════════════╝
-local function sendDiscordWebhook(data)
+local function sendDiscordWebhook(data, allResults)
     if DISCORD_WEBHOOK == "" then return end
-    local gameUrl = "https://www.roblox.com/games/" .. tostring(GAME_ID)
+
+    local jobId   = data.jobId or game.JobId
+    local joinUrl = buildJoinUrl(jobId)
+    local list    = allResults or { data }
+
+    local descLines = {}
+    for _, r in ipairs(list) do
+        local line = "1x " .. (r.emojiMut or "🧠") .. " **" .. r.name .. "** (`" .. formatDPS(r.dps) .. "`)"
+        if r.mutation and r.mutation ~= "Normal" then
+            line = line .. " — " .. r.mutation
+        end
+        if r.traits and r.traits ~= "" then
+            line = line .. "\n   " .. r.traits
+        end
+        if r.inDuel then line = line .. " ⚔️" end
+        if r.fusing then line = line .. " ⚙️" end
+        table.insert(descLines, "• " .. line)
+    end
+
+    local titulo   = "1x " .. (data.emojiMut or "🧠") .. " " .. data.name .. " (`" .. formatDPS(data.dps) .. "`)"
+    local imageUrl = getBrainrotImage(data.name)
+
     local embed = {
         username = "Brainrot Scanner",
         content  = "@here  🔥 **SECRETO ENCONTRADO!**",
         embeds = {{
-            title  = "🧠  " .. tostring(data.name),
-            color  = 16766720,  -- dourado
+            title       = titulo,
+            description = "**Brainrots:**\n" .. table.concat(descLines, "\n"),
+            color       = 16766720,
+            thumbnail   = imageUrl and { url = imageUrl } or nil,
             fields = {
-                { name = "💰 Geração/s",         value = "`"..formatDPS(data.dps).."`",             inline = true  },
-                { name = "🕐 Horário",           value = "`"..getHora().."`",                       inline = true  },
-                { name = "👥 Players",           value = "`"..tostring(#Players:GetPlayers()).."`",  inline = true  },
-                { name = "🆔 Job ID",            value = "```"..game.JobId.."```",                  inline = false },
-                { name = "🔗 Entrar no Server",  value = "[Clique aqui para entrar]("..gameUrl..")", inline = false },
+                { name = "🔗 Entrar no Server", value = "[Clique aqui para entrar](" .. joinUrl .. ")", inline = false },
+                { name = "🆔 Job ID",            value = "```" .. jobId .. "```", inline = false },
+                { name = "💰 Geração/s",         value = "`" .. formatDPS(data.dps) .. "`", inline = true },
+                { name = "🕐 Horário",           value = "`" .. getHora() .. "`", inline = true },
+                { name = "👥 Players",           value = "`" .. tostring(#Players:GetPlayers()) .. "`", inline = true },
+                { name = "👤 Owner",             value = "`" .. (data.ownerName or "?") .. "`", inline = true },
+                { name = "🧬 Mutação",           value = "`" .. (data.mutation or "Normal") .. "`", inline = true },
             },
             footer = { text = "Brainrot Scanner  •  Secret Finder" },
         }}
@@ -432,21 +706,23 @@ local function sendDiscordWebhook(data)
     end)
 end
 
-local function postToRailway(data)
+local function postToRailway(data, allResults)
     task.spawn(function()
-        -- 1) Envia direto pro Discord (webhook no próprio scanner)
-        sendDiscordWebhook(data)
+        sendDiscordWebhook(data, allResults)
         print("[Scanner] 📡 Enviado ao Discord!")
 
-        -- 2) Envia pro Railway (que também repassa ao Troll Face via polling)
         pcall(function()
             httpPost(RAILWAY_URL .. "/found", {
                 brainrotName = data.name,
                 dps          = data.dps,
+                mutation     = data.mutation,
+                traits       = data.traits,
+                owner        = data.ownerName,
                 jobId        = game.JobId,
                 gameId       = GAME_ID,
                 hora         = getHora(),
                 playerCount  = #Players:GetPlayers(),
+                joinUrl      = buildJoinUrl(game.JobId),
             })
             print("[Scanner] 📡 Enviado ao Railway!")
         end)
@@ -488,8 +764,8 @@ local function showFoundNotify(data)
     lbl.TextSize          = 13
     lbl.TextWrapped       = true
     lbl.TextXAlignment    = Enum.TextXAlignment.Left
-    lbl.Text              = ("✅ SECRETO ACHADO!  📛 %s  •  💰 %s"):format(
-        data.name, formatDPS(data.dps)
+    lbl.Text              = ("✅ SECRETO ACHADO!  %s %s  •  💰 %s"):format(
+        data.emojiMut or "🧠", data.name, formatDPS(data.dps)
     )
 
     TweenService:Create(frame,
@@ -667,17 +943,32 @@ print(("[Scanner] 🟢 Iniciado — hop #%d — server: %s"):format(
 
 createHUD(hopCount)
 
-local elapsed   = 0
-local lastCheck = 0
-local found     = false
+local elapsed      = 0
+local lastCheck    = 0
+local stopping     = false
+local isHopping    = false
+local sentThisJob  = {}
 local heartbeat
 
+local function startHop(nextHop)
+    if isHopping then return end
+    isHopping = true
+    stopping  = true
+    if heartbeat then heartbeat:Disconnect() end
+
+    _G._brainrotHopCount = nextHop
+    _G._scannerRunning   = false
+
+    task.spawn(function()
+        hopServer(nextHop)
+    end)
+end
+
 heartbeat = RunService.Heartbeat:Connect(function(dt)
-    if found then return end
+    if stopping then return end
     elapsed   = elapsed   + dt
     lastCheck = lastCheck + dt
 
-    -- Atualiza timer no HUD
     if timerLabel and timerLabel.Parent then
         local remaining = math.max(0, HOP_TIMEOUT - elapsed)
         timerLabel.Text = ("⏱ Hop em: %ds   •   Scans: %d"):format(
@@ -689,36 +980,39 @@ heartbeat = RunService.Heartbeat:Connect(function(dt)
     if lastCheck < SCAN_INTERVAL then return end
     lastCheck = 0
 
-    local result = scanForSecret()
+    local best, allResults = scanForSecret()
 
-    if result then
-        found = true
-        heartbeat:Disconnect()
+    if best then
+        local dedupKey = game.JobId .. "__" .. (best.rawName or best.name) .. "__" .. tostring(best.dps)
+        if not sentThisJob[dedupKey] then
+            sentThisJob[dedupKey] = true
 
-        -- Atualiza HUD
-        if hudLabel and hudLabel.Parent then
-            hudLabel.Text       = ("✅ %s"):format(result.name)
-            hudLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+            if hudLabel and hudLabel.Parent then
+                hudLabel.Text       = ("✅ %s"):format(best.name)
+                hudLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+            end
+            if hopCountLabel and hopCountLabel.Parent then
+                hopCountLabel.Text = ("💰 %s  •  👥 %d players"):format(
+                    formatDPS(best.dps), #Players:GetPlayers()
+                )
+            end
+
+            print(("[Scanner] ✅ Secreto: %s (%s) — hop em %ds"):format(
+                best.name, formatDPS(best.dps), NOTIFY_BEFORE_HOP
+            ))
+            showFoundNotify(best)
+            postToRailway(best, allResults)
         end
-        if hopCountLabel and hopCountLabel.Parent then
-            hopCountLabel.Text = ("💰 %s  •  👥 %d players"):format(
-                formatDPS(result.dps), #Players:GetPlayers()
-            )
-        end
-
-        print(("[Scanner] ✅ Secreto: %s (%s)"):format(result.name, formatDPS(result.dps)))
-        showFoundNotify(result)
-        postToRailway(result)
-
-    elseif elapsed >= HOP_TIMEOUT then
-        found = true
-        heartbeat:Disconnect()
-
-        _G._brainrotHopCount = hopCount + 1
-        _G._scannerRunning   = false
 
         task.spawn(function()
-            hopServer(hopCount + 1)
+            task.wait(NOTIFY_BEFORE_HOP)
+            if not isHopping then
+                startHop(hopCount + 1)
+            end
         end)
+        stopping = true
+
+    elseif elapsed >= HOP_TIMEOUT then
+        startHop(hopCount + 1)
     end
 end)
