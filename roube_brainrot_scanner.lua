@@ -181,3 +181,268 @@ local SECRET_BRAINROTS = {
 	"Chimpanzini Spiderini",
 	"Tortuginni Dragonfruitini",
 }
+
+local function getHttpRequest()
+	return (syn and syn.request)
+		or (http and http.request)
+		or (fluxus and fluxus.request)
+		or (krnl and krnl.request)
+		or (request and typeof(request) == "function" and request)
+		or nil
+end
+
+local function normalizeName(str)
+	str = string.lower(str or "")
+	str = string.gsub(str, "[%s%p_]+", "")
+	return str
+end
+
+local function buildTargetList()
+	local targets = {}
+	for _, name in ipairs(OG_BRAINROTS) do
+		table.insert(targets, { name = name, rarity = "OG" })
+	end
+	for _, name in ipairs(SECRET_BRAINROTS) do
+		table.insert(targets, { name = name, rarity = "Secreto" })
+	end
+	table.sort(targets, function(a, b)
+		return #a.name > #b.name
+	end)
+	local normalized = {}
+	for _, entry in ipairs(targets) do
+		normalized[#normalized + 1] = {
+			display = entry.name,
+			rarity = entry.rarity,
+			key = normalizeName(entry.name),
+		}
+	end
+	return normalized
+end
+
+local TARGETS = buildTargetList()
+
+local function matchBrainrot(rawName)
+	local key = normalizeName(rawName)
+	if key == "" then
+		return nil
+	end
+	for _, target in ipairs(TARGETS) do
+		if key == target.key or string.find(key, target.key, 1, true) then
+			return target.display, target.rarity
+		end
+	end
+	return nil
+end
+
+local function waitForPlots(timeout)
+	local deadline = os.clock() + (timeout or 30)
+	repeat
+		local plots = workspace:FindFirstChild(PLOTS_FOLDER_NAME)
+		if plots then
+			return plots
+		end
+		task.wait(0.25)
+	until os.clock() >= deadline
+	return workspace:FindFirstChild(PLOTS_FOLDER_NAME)
+end
+
+local function scanPlots()
+	local plots = waitForPlots(45)
+	local foundMap = {}
+
+	if not plots then
+		warn("[BrainrotScanner] Pasta '" .. PLOTS_FOLDER_NAME .. "' não encontrada.")
+		return {}
+	end
+
+	for _, plot in ipairs(plots:GetChildren()) do
+		for _, child in ipairs(plot:GetDescendants()) do
+			if child:IsA("Model") then
+				local displayName, rarity = matchBrainrot(child.Name)
+				if displayName then
+					local bucket = foundMap[displayName]
+					if not bucket then
+						bucket = { name = displayName, rarity = rarity, count = 0 }
+						foundMap[displayName] = bucket
+					end
+					bucket.count += 1
+				end
+			end
+		end
+	end
+
+	local foundList = {}
+	for _, data in pairs(foundMap) do
+		table.insert(foundList, data)
+	end
+	table.sort(foundList, function(a, b)
+		if a.rarity == b.rarity then
+			return a.name < b.name
+		end
+		return a.rarity == "OG"
+	end)
+
+	return foundList
+end
+
+local function formatFoundList(found)
+	if #found == 0 then
+		return "Nenhum"
+	end
+	local lines = {}
+	for _, item in ipairs(found) do
+		local suffix = item.count > 1 and (" (x" .. item.count .. ")") or ""
+		table.insert(lines, string.format("**[%s]** %s%s", item.rarity, item.name, suffix))
+	end
+	return table.concat(lines, "\n")
+end
+
+local function getJoinUrl(placeId, jobId)
+	return string.format(
+		"https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s",
+		tostring(placeId),
+		tostring(jobId)
+	)
+end
+
+local function sendWebhook(found)
+	local playerCount = #Players:GetPlayers()
+	local jobId = game.JobId
+	local placeId = game.PlaceId
+	local timestamp = os.date("%d/%m/%Y %H:%M:%S")
+	local joinUrl = getJoinUrl(placeId, jobId)
+
+	local hasOG = false
+	for _, item in ipairs(found) do
+		if item.rarity == "OG" then
+			hasOG = true
+			break
+		end
+	end
+
+	local embedColor = hasOG and 16766720 or 10181046
+	local title = hasOG and "OG encontrado no servidor!" or "Secreto(s) encontrado(s)!"
+
+	local payload = {
+		username = "Roube um Brainrot Scanner",
+		embeds = {
+			{
+				title = title,
+				color = embedColor,
+				description = formatFoundList(found),
+				fields = {
+					{ name = "Jogadores no servidor", value = tostring(playerCount), inline = true },
+					{ name = "Horário", value = timestamp, inline = true },
+					{ name = "JobId", value = "`" .. jobId .. "`", inline = false },
+				},
+				footer = { text = "PlaceId: " .. tostring(placeId) },
+			},
+		},
+		components = {
+			{
+				type = 1,
+				components = {
+					{
+						type = 2,
+						style = 5,
+						label = "Entrar no servidor",
+						url = joinUrl,
+					},
+				},
+			},
+		},
+	}
+
+	local body = HttpService:JSONEncode(payload)
+	local headers = { ["Content-Type"] = "application/json" }
+
+	local httpRequest = getHttpRequest()
+	local ok, err
+
+	if httpRequest then
+		ok, err = pcall(function()
+			local response = httpRequest({
+				Url = WEBHOOK_URL,
+				Method = "POST",
+				Headers = headers,
+				Body = body,
+			})
+			if response and response.StatusCode and response.StatusCode >= 400 then
+				error("HTTP " .. tostring(response.StatusCode) .. ": " .. tostring(response.Body))
+			end
+		end)
+	else
+		ok, err = pcall(function()
+			HttpService:PostAsync(WEBHOOK_URL, body, Enum.HttpContentType.ApplicationJson)
+		end)
+	end
+
+	if ok then
+		print("[BrainrotScanner] Webhook enviado com sucesso.")
+	else
+		warn("[BrainrotScanner] Falha ao enviar webhook: " .. tostring(err))
+	end
+end
+
+local hopConnection
+
+local function hopServer()
+	local placeId = game.PlaceId
+
+	if hopConnection then
+		hopConnection:Disconnect()
+		hopConnection = nil
+	end
+
+	hopConnection = TeleportService.TeleportInitFailed:Connect(function(player, teleportResult)
+		if player ~= LocalPlayer then
+			return
+		end
+
+		local retryResults = {
+			[Enum.TeleportResult.GameFull] = true,
+			[Enum.TeleportResult.Flooded] = true,
+			[Enum.TeleportResult.Failure] = true,
+			[Enum.TeleportResult.Unauthorized] = true,
+		}
+
+		if retryResults[teleportResult] then
+			warn("[BrainrotScanner] Hop falhou (" .. tostring(teleportResult) .. "), tentando de novo...")
+			task.wait(1.5)
+			pcall(function()
+				TeleportService:Teleport(placeId, LocalPlayer)
+			end)
+		end
+	end)
+
+	local function attempt()
+		local success, teleportErr = pcall(function()
+			TeleportService:Teleport(placeId, LocalPlayer)
+		end)
+		if not success then
+			warn("[BrainrotScanner] Erro no Teleport: " .. tostring(teleportErr))
+			task.wait(1.5)
+			attempt()
+		end
+	end
+
+	attempt()
+end
+
+local function runCycle()
+	print("[BrainrotScanner] Escaneando pasta '" .. PLOTS_FOLDER_NAME .. "'...")
+	local found = scanPlots()
+
+	if #found > 0 then
+		print("[BrainrotScanner] Encontrado(s): " .. formatFoundList(found))
+		sendWebhook(found)
+	else
+		print("[BrainrotScanner] Nenhum OG/Secreto encontrado neste servidor.")
+	end
+
+	print("[BrainrotScanner] Aguardando " .. SCAN_WAIT_SECONDS .. "s antes do server hop...")
+	task.wait(SCAN_WAIT_SECONDS)
+	hopServer()
+end
+
+runCycle()
