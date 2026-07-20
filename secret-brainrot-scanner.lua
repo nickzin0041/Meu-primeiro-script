@@ -19,11 +19,12 @@ local LocalPlayer = Players.LocalPlayer
 -- ║  ⚙️  CONFIGURAÇÃO                                        ║
 -- ╚══════════════════════════════════════════════════════════╝
 local RAILWAY_URL    = "https://nodejs-server-production-3131.up.railway.app"
-local DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1523411500763578480/3j_4onUIRlVe3PUzlqgcvCbFlaJweaEnL5W0tjd0-b6dffPsk6bNLEYXguBqwlCI-D9H"
+local DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1528792208864448664/cg6sguhE-Mf35TirgzhppvrOhRFe42-LaQxjUeAmD_G9Aq0_X42DDDeDLvDZQL2g0jIB"
 local SCRIPT_URL     = "https://pastefy.app/Lb2BRnpX/raw"
 local GAME_ID        = 109983668079237
 local SCAN_INTERVAL  = 4    -- segundos entre varreduras
 local HOP_TIMEOUT    = 12   -- segundos sem achar → hop
+local FOUND_HOP_DELAY = 3   -- segundos após achar (tempo pro webhook sair) → hop
 
 -- ╔══════════════════════════════════════════════════════════╗
 -- ║  🌐  HTTP DO EXECUTOR                                    ║
@@ -59,28 +60,46 @@ end
 
 local function httpPost(url, payload)
     local body = HttpService:JSONEncode(payload)
-    local sent = false
-    if not sent then pcall(function()
-        if syn and syn.request then
-            syn.request({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
-            sent = true
+
+    local function tryExecutorRequest(reqFn)
+        local ok, res = pcall(function()
+            return reqFn({
+                Url     = url,
+                Method  = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body    = body,
+            })
+        end)
+        if not ok or not res then return false end
+        local code = res.StatusCode or res.status or res.Status
+        if code and (code < 200 or code >= 300) then
+            return false, res.Body or res.body
         end
-    end) end
-    if not sent then pcall(function()
-        if request then
-            request({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
-            sent = true
-        end
-    end) end
-    if not sent then pcall(function()
-        if http_request then
-            http_request({ Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = body })
-            sent = true
-        end
-    end) end
-    if not sent then pcall(function()
+        return true
+    end
+
+    if syn and syn.request then
+        local ok, err = tryExecutorRequest(syn.request)
+        if ok then return true end
+        if err then warn("[Scanner] Discord POST (syn): " .. tostring(err):sub(1, 200)) end
+    end
+    if request then
+        local ok, err = tryExecutorRequest(request)
+        if ok then return true end
+        if err then warn("[Scanner] Discord POST (request): " .. tostring(err):sub(1, 200)) end
+    end
+    if http_request then
+        local ok, err = tryExecutorRequest(http_request)
+        if ok then return true end
+        if err then warn("[Scanner] Discord POST (http_request): " .. tostring(err):sub(1, 200)) end
+    end
+
+    local ok, err = pcall(function()
         HttpService:PostAsync(url, body, Enum.HttpContentType.ApplicationJson, false)
-    end) end
+    end)
+    if ok then return true end
+    warn("[Scanner] Discord POST (HttpService): " .. tostring(err))
+    return false
 end
 
 -- ╔══════════════════════════════════════════════════════════╗
@@ -407,7 +426,7 @@ local function tierLabelForDps(dps)
 end
 
 local function sendDiscordWebhook(data)
-    if DISCORD_WEBHOOK == "" then return end
+    if DISCORD_WEBHOOK == "" then return false end
 
     local placeId = game.PlaceId
     local jobId   = game.JobId
@@ -416,35 +435,33 @@ local function sendDiscordWebhook(data)
     local dpsFmt  = formatDPS(data.dps)
     local tier    = tierLabelForDps(data.dps)
 
-    local embed = {
-        username   = "🧠 Brainrot Scanner",
+    local fullPayload = {
+        username   = "Brainrot Scanner",
         avatar_url = "https://www.roblox.com/favicon.ico",
         content    = "@here  **Alguém achou um secreto — corre!**",
         embeds = {{
             author = {
-                name     = "🔥 SECRETO ENCONTRADO",
+                name     = "SECRETO ENCONTRADO",
                 icon_url = "https://www.roblox.com/favicon.ico",
             },
-            title = "✨  " .. tostring(data.name),
+            title = tostring(data.name),
             description = table.concat({
+                "**" .. tier .. "**  •  **" .. dpsFmt .. "**",
                 "",
-                "**" .. tier .. "**  •  **`" .. dpsFmt .. "`**",
+                "Entre neste servidor:",
+                joinUrl,
                 "",
-                "▸ Brainrot detectado neste servidor.",
-                "▸ Clique no botão **Clique aqui para entrar** para abrir o Roblox **nesta instância** (Job ID).",
-                "",
+                "[Clique aqui para entrar](" .. joinUrl .. ")",
             }, "\n"),
             color = embedColorForDps(data.dps),
             fields = {
-                { name = "💰 Geração/s", value = "**`" .. dpsFmt .. "`**",              inline = true },
-                { name = "🕐 Horário",   value = "`" .. getHora() .. "`",                inline = true },
-                { name = "👥 Jogadores", value = "`" .. tostring(players) .. " online`", inline = true },
-                { name = "🎮 Place ID",  value = "`" .. tostring(placeId) .. "`",        inline = true },
-                { name = "🆔 Job ID",    value = "`" .. jobId .. "`",                    inline = true },
-                { name = "🔗 Link",      value = joinUrl,                                inline = false },
+                { name = "Geração/s", value = "`" .. dpsFmt .. "`",              inline = true },
+                { name = "Horário",   value = "`" .. getHora() .. "`",            inline = true },
+                { name = "Jogadores", value = "`" .. tostring(players) .. "`",    inline = true },
+                { name = "Place ID",  value = "`" .. tostring(placeId) .. "`",    inline = true },
+                { name = "Job ID",    value = "`" .. jobId .. "`",                inline = true },
             },
-            thumbnail = { url = "https://www.roblox.com/favicon.ico" },
-            footer    = { text = "Brainrot Scanner v5  •  Secret Finder" },
+            footer = { text = "Brainrot Scanner v5" },
         }},
         components = {
             {
@@ -453,7 +470,7 @@ local function sendDiscordWebhook(data)
                     {
                         type  = 2,
                         style = 5,
-                        label = "🚀 Clique aqui para entrar",
+                        label = "Clique aqui para entrar",
                         url   = joinUrl,
                     },
                 },
@@ -463,20 +480,39 @@ local function sendDiscordWebhook(data)
 
     pcall(function()
         local ts = DateTime.now():ToIsoDate()
-        if ts then embed.embeds[1].timestamp = ts end
+        if ts then fullPayload.embeds[1].timestamp = ts end
     end)
-    pcall(function()
-        httpPost(DISCORD_WEBHOOK, embed)
-    end)
+
+    if httpPost(DISCORD_WEBHOOK, fullPayload) then
+        print("[Scanner] Discord webhook OK (embed + botão)")
+        return true
+    end
+
+    warn("[Scanner] Webhook com botão falhou — tentando payload simples...")
+    local simplePayload = {
+        username = "Brainrot Scanner",
+        content  = ("@here **SECRETO:** %s (%s)\n**Entrar no servidor:** %s"):format(
+            tostring(data.name), dpsFmt, joinUrl
+        ),
+    }
+    if httpPost(DISCORD_WEBHOOK, simplePayload) then
+        print("[Scanner] Discord webhook OK (fallback)")
+        return true
+    end
+
+    warn("[Scanner] Falha ao enviar webhook — verifique URL e HTTP do executor")
+    return false
 end
 
 local function postToRailway(data)
     task.spawn(function()
-        -- 1) Envia direto pro Discord (webhook no próprio scanner)
-        sendDiscordWebhook(data)
-        print("[Scanner] 📡 Enviado ao Discord!")
+        local discordOk = sendDiscordWebhook(data)
+        if discordOk then
+            print("[Scanner] Enviado ao Discord!")
+        else
+            warn("[Scanner] Discord não confirmou envio — veja warns acima")
+        end
 
-        -- 2) Envia pro Railway (que também repassa ao Troll Face via polling)
         pcall(function()
             httpPost(RAILWAY_URL .. "/found", {
                 brainrotName = data.name,
@@ -488,8 +524,42 @@ local function postToRailway(data)
                 hora         = getHora(),
                 playerCount  = #Players:GetPlayers(),
             })
-            print("[Scanner] 📡 Enviado ao Railway!")
+            print("[Scanner] Enviado ao Railway!")
         end)
+    end)
+end
+
+local function onSecretFound(result, hopCount, heartbeatRef)
+    if not _G._scannerWebhookDedupe then _G._scannerWebhookDedupe = {} end
+    local dedupeKey = game.JobId .. "|" .. normalizeName(result.name)
+
+    if hudLabel and hudLabel.Parent then
+        hudLabel.Text       = ("ACHOU: %s — hop em %ds"):format(result.name, FOUND_HOP_DELAY)
+        hudLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    end
+    if hopCountLabel and hopCountLabel.Parent then
+        hopCountLabel.Text = ("💰 %s  •  👥 %d players"):format(
+            formatDPS(result.dps), #Players:GetPlayers()
+        )
+    end
+
+    print(("[Scanner] Secreto: %s (%s) — continuando hop em %ds"):format(
+        result.name, formatDPS(result.dps), FOUND_HOP_DELAY
+    ))
+
+    if not _G._scannerWebhookDedupe[dedupeKey] then
+        _G._scannerWebhookDedupe[dedupeKey] = true
+        showFoundNotify(result)
+        postToRailway(result)
+    end
+
+    heartbeatRef:Disconnect()
+
+    task.spawn(function()
+        task.wait(FOUND_HOP_DELAY)
+        _G._brainrotHopCount = hopCount + 1
+        _G._scannerRunning   = false
+        hopServer(hopCount + 1)
     end)
 end
 
@@ -744,23 +814,7 @@ heartbeat = RunService.Heartbeat:Connect(function(dt)
     local result = scanForSecret()
 
     if result then
-        found = true
-        heartbeat:Disconnect()
-
-        -- Atualiza HUD
-        if hudLabel and hudLabel.Parent then
-            hudLabel.Text       = ("✅ %s"):format(result.name)
-            hudLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-        end
-        if hopCountLabel and hopCountLabel.Parent then
-            hopCountLabel.Text = ("💰 %s  •  👥 %d players"):format(
-                formatDPS(result.dps), #Players:GetPlayers()
-            )
-        end
-
-        print(("[Scanner] ✅ Secreto: %s (%s)"):format(result.name, formatDPS(result.dps)))
-        showFoundNotify(result)
-        postToRailway(result)   -- → Railway → Discord webhook
+        onSecretFound(result, hopCount, heartbeat)
 
     elseif elapsed >= HOP_TIMEOUT then
         found = true
